@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Steply</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --blue: #185FA5;
+      --blue-light: #E6F1FB;
+      --dark: #111827;
+      --grey: #6B7280;
+      --grey-light: #E5E7EB;
+      --bg: #F9FAFB;
+      --white: #ffffff;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--dark);
+      line-height: 1.7;
+      font-size: 15px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Nav ── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 0.5px solid var(--grey-light);
+      padding: 14px 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+    }
+
+    .nav-logo {
+      width: 28px;
+      height: 28px;
+      background: var(--blue);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'DM Mono', monospace;
+      font-weight: 500;
+      font-size: 13px;
+      color: white;
+    }
+
+    .nav-name {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--dark);
+    }
+
+    .nav-badge {
+      font-size: 11px;
+      color: var(--grey);
+      background: var(--bg);
+      border: 0.5px solid var(--grey-light);
+      padding: 4px 10px;
+      border-radius: 99px;
+    }
+
+    /* ── Layout ── */
+    .page {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 60px 40px 100px;
+    }
+
+    /* ── Header ── */
+    .page-header {
+      margin-bottom: 48px;
+      padding-bottom: 32px;
+      border-bottom: 0.5px solid var(--grey-light);
+    }
+
+    .page-header h1 {
+      font-size: 28px;
+      font-weight: 500;
+      color: var(--dark);
+      margin-bottom: 10px;
+      letter-spacing: -0.3px;
+    }
+
+    .page-header .meta {
+      font-size: 13px;
+      color: var(--grey);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .meta-dot {
+      width: 3px;
+      height: 3px;
+      background: var(--grey-light);
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    /* ── Summary card ── */
+    .summary-card {
+      background: var(--blue-light);
+      border: 0.5px solid #C3DAEF;
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 48px;
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .summary-icon {
+      width: 36px;
+      height: 36px;
+      background: var(--blue);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 16px;
+    }
+
+    .summary-card p {
+      font-size: 13.5px;
+      color: #0C447C;
+      line-height: 1.65;
+    }
+
+    .summary-card strong {
+      font-weight: 500;
+    }
+
+    /* ── Sections ── */
+    .section {
+      margin-bottom: 40px;
+    }
+
+    .section h2 {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--dark);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section h2::after {
+      content: '';
+      flex: 1;
+      height: 0.5px;
+      background: var(--grey-light);
+    }
+
+    .section p {
+      font-size: 14.5px;
+      color: #374151;
+      line-height: 1.75;
+      margin-bottom: 10px;
+    }
+
+    .section p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* ── Fact list ── */
+    .fact-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .fact-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      font-size: 14.5px;
+      color: #374151;
+      line-height: 1.6;
+    }
+
+    .fact-check {
+      width: 20px;
+      height: 20px;
+      background: #E1F5EE;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+      font-size: 11px;
+      color: #0F6E56;
+    }
+
+    /* ── Permission block ── */
+    .permission-block {
+      background: var(--white);
+      border: 0.5px solid var(--grey-light);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-top: 14px;
+    }
+
+    .permission-block .perm-name {
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--blue);
+      background: var(--blue-light);
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-block;
+      margin-bottom: 8px;
+    }
+
+    .permission-block p {
+      font-size: 13.5px;
+      color: var(--grey);
+      margin: 0;
+    }
+
+    /* ── Contact block ── */
+    .contact-block {
+      background: var(--white);
+      border: 0.5px solid var(--grey-light);
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-top: 14px;
+    }
+
+    .contact-block a {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .contact-block a:hover {
+      text-decoration: underline;
+    }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 0.5px solid var(--grey-light);
+      padding: 24px 40px;
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    footer p {
+      font-size: 12px;
+      color: var(--grey);
+    }
+
+    footer a {
+      font-size: 12px;
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 600px) {
+      nav {
+        padding: 12px 20px;
+      }
+
+      .page {
+        padding: 40px 20px 80px;
+      }
+
+      .page-header h1 {
+        font-size: 22px;
+      }
+
+      footer {
+        padding: 20px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <nav>
+    <a class="nav-brand" href="#">
+      <div class="nav-logo">S</div>
+      <span class="nav-name">Steply</span>
+    </a>
+    <span class="nav-badge">Privacy Policy</span>
+  </nav>
+
+  <main class="page">
+
+    <div class="page-header">
+      <h1>Privacy Policy</h1>
+      <div class="meta">
+        <span>Steply Chrome Extension</span>
+        <span class="meta-dot"></span>
+        <span>Effective: May 6, 2026</span>
+        <span class="meta-dot"></span>
+        <span>Last updated: May 6, 2026</span>
+      </div>
+    </div>
+
+    <div class="summary-card">
+      <div class="summary-icon">🔒</div>
+      <p>
+        <strong>The short version:</strong> Steply stores everything locally on your device using IndexedDB. We collect
+        no personal data, send nothing to any server, require no account, and run no analytics or tracking of any kind.
+        Your recordings stay on your machine — always.
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>What Steply does</h2>
+      <p>Steply is a Chrome extension that records your browser interactions — clicks, scrolls, and navigation — and
+        turns them into step-by-step guides with screenshots. All of this happens entirely within your browser.</p>
+    </div>
+
+    <div class="section">
+      <h2>Data we collect</h2>
+      <ul class="fact-list">
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>No personal data collected.</strong> We do not collect your name, email, IP address, or any
+            identifying information.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>No data sent to servers.</strong> Steply has no backend. Nothing you record is transmitted
+            anywhere.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>No account required.</strong> You install and use Steply without signing up or logging
+            in.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>No analytics or tracking.</strong> We use no third-party analytics, crash reporting, or usage
+            tracking tools.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>Local storage only.</strong> All guides, steps, and screenshots are stored in your browser's
+            IndexedDB — local to your device.</span>
+        </li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h2>Permissions explained</h2>
+      <p>Steply requests the following Chrome permissions. Here is exactly why each one is needed:</p>
+
+      <div class="permission-block">
+        <span class="perm-name">&lt;all_urls&gt;</span>
+        <p>Required to capture screenshots on any website the user explicitly chooses to record. Steply only activates
+          on a page when you press Start Recording — it does not read, scan, or interact with any page passively.</p>
+      </div>
+
+      <div class="permission-block" style="margin-top: 10px;">
+        <span class="perm-name">activeTab</span>
+        <p>Required to access the currently active tab when you trigger a recording. Used solely to capture the
+          screenshot of the page at the moment of each recorded step.</p>
+      </div>
+
+      <div class="permission-block" style="margin-top: 10px;">
+        <span class="perm-name">storage</span>
+        <p>Required to persist your recorded guides locally in IndexedDB between browser sessions. No data leaves your
+          device.</p>
+      </div>
+
+      <div class="permission-block" style="margin-top: 10px;">
+        <span class="perm-name">scripting</span>
+        <p>Required to detect and highlight the element you clicked on during a recording session, so each step is
+          accurately annotated with a screenshot.</p>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Data storage & retention</h2>
+      <p>All guides and screenshots created by Steply are stored locally in your browser's IndexedDB. This data never
+        leaves your device. You can delete any guide at any time from the Steply dashboard, which permanently removes it
+        from local storage.</p>
+      <p>Uninstalling the Steply extension from Chrome will remove all locally stored data.</p>
+    </div>
+
+    <div class="section">
+      <h2>Third-party services</h2>
+      <p>Steply does not integrate with, share data with, or rely on any third-party services, APIs, or SDKs. There are
+        no advertising networks, analytics providers, or external data processors involved.</p>
+    </div>
+
+    <div class="section">
+      <h2>Children's privacy</h2>
+      <p>Steply is not directed at children under the age of 13 and we do not knowingly collect any information from
+        children. Since we collect no personal data from anyone, no special handling is required.</p>
+    </div>
+
+    <div class="section">
+      <h2>Changes to this policy</h2>
+      <p>If we update this privacy policy, the new version will be posted at this URL with an updated effective date. We
+        encourage you to review it periodically. Continued use of Steply after any changes constitutes acceptance of the
+        updated policy.</p>
+    </div>
+
+    <div class="section">
+      <h2>Contact</h2>
+      <div class="contact-block">
+        <p style="font-size: 14px; color: #374151; margin-bottom: 8px;">If you have any questions about this privacy
+          policy or how Steply handles your data, please reach out:</p>
+        <p style="font-size: 14px; margin: 0;">Email: <a
+            href="mailto:bevarasaikumar121@gmail.com">bevarasaikumar121@gmail.com</a></p>
+      </div>
+    </div>
+
+  </main>
+
+  <footer>
+    <p>© 2026 Steply. All rights reserved.</p>
+    <a href="#">Back to top ↑</a>
+  </footer>
+
+</body>
+
+</html>

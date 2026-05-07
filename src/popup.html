@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Steply</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+  <style>
+    :root {
+      --color-background-secondary: #f3f4f6;
+      --color-background-primary: #ffffff;
+      --border-radius-lg: 14px;
+      --color-border-secondary: #e5e7eb;
+      --color-border-tertiary: #f3f4f6;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --color-text-primary: #111827;
+      --color-text-secondary: #6b7280;
+      --color-text-tertiary: #9ca3af;
+      --color-background-info: #EFF6FF;
+      --color-text-info: #3B82F6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 340px;
+      background: var(--color-background-primary);
+      font-family: var(--font-sans);
+      overflow-x: hidden;
+    }
+    
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .recording-pulse { animation: pulse 1.4s ease-in-out infinite; }
+
+    .btn-primary {
+      width: 100%;
+      background: #185FA5;
+      color: #E6F1FB;
+      border: none;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.2s;
+    }
+    .btn-primary:hover { background: #15518d; }
+
+    .btn-secondary {
+      width: 100%;
+      background: transparent;
+      color: var(--color-text-primary);
+      border: 0.5px solid var(--color-border-secondary);
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 400;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.2s;
+    }
+    .btn-secondary:hover { background: var(--color-background-secondary); }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div style="padding: 16px 18px 14px; border-bottom: 0.5px solid var(--color-border-tertiary); display: flex; align-items: center; justify-content: space-between;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <img src="images/icon48.png" style="width: 32px; height: 32px; border-radius: 8px;" alt="Steply Logo" />
+      <div>
+        <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--color-text-primary);">Steply</p>
+        <p style="margin: 0; font-size: 11px; color: var(--color-text-secondary);">Step recorder</p>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 6px;">
+      <span id="statusWrapper" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #0F6E56; background: #E1F5EE; padding: 3px 8px; border-radius: 20px; font-weight: 500; transition: all 0.2s;">
+        <span id="statusDot" style="width: 6px; height: 6px; background: #1D9E75; border-radius: 50%; display: inline-block; transition: all 0.2s;"></span>
+        <span id="statusText">Ready</span>
+      </span>
+      <button id="privacyBtn" title="Privacy Policy" style="background: none; border: none; cursor: pointer; color: var(--color-text-secondary); padding: 4px; display: flex; align-items: center; transition: color 0.15s;" onmouseover="this.style.color='var(--color-text-primary)'" onmouseout="this.style.color='var(--color-text-secondary)'">
+        <i class="ti ti-shield-lock" style="font-size: 16px;" aria-hidden="true"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- Primary Action -->
+  <div style="padding: 16px 18px 12px;">
+    <button id="recordBtn" class="btn-primary">
+      <i id="recordIcon" class="ti ti-player-record" style="font-size: 16px;" aria-hidden="true"></i>
+      <span id="recordLabel">Start recording</span>
+    </button>
+    <button id="dashboardBtn" class="btn-secondary" style="margin-top: 8px;">
+      <i class="ti ti-layout-dashboard" style="font-size: 15px;" aria-hidden="true"></i>
+      Open dashboard
+    </button>
+  </div>
+
+  <!-- Settings: Default Filter -->
+  <div style="padding: 0 18px 12px; display: flex; align-items: center; justify-content: space-between;">
+    <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary);">Default Highlight</span>
+    <div style="display: flex; background: var(--color-background-secondary); border-radius: 6px; padding: 2px;">
+      <button id="color-red" class="filter-btn" style="border: none; background: #FEF2F2; color: #B91C1C; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s;">Flare</button>
+      <button id="color-green" class="filter-btn" style="border: none; background: transparent; color: var(--color-text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s;">Orbit</button>
+      <button id="color-none" class="filter-btn" style="border: none; background: transparent; color: var(--color-text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s;">None</button>
+    </div>
+  </div>
+
+  <!-- Divider + label -->
+  <div style="padding: 0 18px 10px; display: flex; align-items: center; gap: 10px;">
+    <div style="flex: 1; height: 0.5px; background: var(--color-border-tertiary);"></div>
+    <span style="font-size: 11px; color: var(--color-text-tertiary); letter-spacing: 0.5px; text-transform: uppercase;">Recent guides</span>
+    <div style="flex: 1; height: 0.5px; background: var(--color-border-tertiary);"></div>
+  </div>
+
+  <!-- Guide List -->
+  <div id="guidesList" style="padding: 0 12px 12px; display: flex; flex-direction: column; gap: 4px; min-height: 150px;">
+    <div style="text-align: center; font-size: 12px; color: var(--color-text-tertiary); padding: 18px 0;">Loading guides...</div>
+  </div>
+
+  <!-- Footer Tab Bar -->
+  <div style="border-top: 0.5px solid var(--color-border-tertiary); display: flex;">
+    <button id="tabCapture" style="flex: 1; padding: 12px 0; background: transparent; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; color: #185FA5; border-bottom: 2px solid #185FA5;">
+      <i class="ti ti-aperture" style="font-size: 18px;" aria-hidden="true"></i>
+      <span style="font-size: 11px; font-weight: 500;">Capture</span>
+    </button>
+    <button id="tabGuides" style="flex: 1; padding: 12px 0; background: transparent; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--color-text-tertiary); border-bottom: 2px solid transparent;" onmouseover="this.style.color='#111827'" onmouseout="this.style.color='var(--color-text-tertiary)'">
+      <i class="ti ti-book" style="font-size: 18px;" aria-hidden="true"></i>
+      <span style="font-size: 11px;">Guides</span>
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
