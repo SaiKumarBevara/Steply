@@ -31,18 +31,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function getCSSSelector(el) {
   if (!(el instanceof Element)) return '';
   const path = [];
-  while (el.nodeType === Node.ELEMENT_NODE) {
+  while (el) {
     let selector = el.nodeName.toLowerCase();
     if (el.id) {
       selector += '#' + el.id;
       path.unshift(selector);
       break;
     } else {
-      // BUG G: use index-based counting across all children with the same tag
-      // to get the correct nth-of-type value (old sibling-walk was off-by-one
-      // and only counted preceding siblings, not all same-type children).
       if (el.parentNode) {
-        const siblings = Array.from(el.parentNode.children).filter(
+        const siblings = Array.from(el.parentNode.children || []).filter(
           s => s.nodeName === el.nodeName
         );
         const nth = siblings.indexOf(el) + 1;
@@ -50,9 +47,16 @@ function getCSSSelector(el) {
       }
     }
     path.unshift(selector);
-    // Stop traversal if parentNode is null or not a real element (detached / Shadow DOM)
-    if (!el.parentNode || el.parentNode.nodeType !== Node.ELEMENT_NODE) break;
-    el = el.parentNode;
+
+    // Shadow DOM traversal: if parent is a ShadowRoot, go to its host element
+    let parent = el.parentNode;
+    if (!parent && el.getRootNode) {
+      const root = el.getRootNode();
+      if (root instanceof ShadowRoot) parent = root.host;
+    }
+    
+    if (!parent || parent.nodeType !== Node.ELEMENT_NODE) break;
+    el = parent;
   }
   return path.join(' > ');
 }

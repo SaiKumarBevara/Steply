@@ -10,6 +10,8 @@ const CRITICAL_RATIO = 0.85;    // stop saving at 85 % storage used
 let db;
 let currentGuide = null;
 let isRecording   = false;
+let stepQueue     = [];
+let isProcessing  = false;
 
 // ─── IndexedDB Setup ─────────────────────────────────────────────────────────
 function openDB() {
@@ -21,8 +23,10 @@ function openDB() {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('guides'))
         d.createObjectStore('guides', { keyPath: 'id' });
-      if (!d.objectStoreNames.contains('steps'))
-        d.createObjectStore('steps',  { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('steps')) {
+        const stepsStore = d.createObjectStore('steps',  { keyPath: 'id' });
+        stepsStore.createIndex('guideId', 'guideId', { unique: false });
+      }
       // v2 — dedicated Blob store (no base64, no inline data in steps)
       if (!d.objectStoreNames.contains('screenshots')) {
         const ss = d.createObjectStore('screenshots', { keyPath: 'id' });
@@ -150,10 +154,11 @@ function deleteGuide(guideId) {
     const tx = db.transaction(['guides', 'steps', 'screenshots'], 'readwrite');
     tx.objectStore('guides').delete(guideId);
 
-    // Delete all steps for this guide
-    tx.objectStore('steps').openCursor().onsuccess = (e) => {
+    // Delete all steps for this guide using the guideId index
+    const stepsIdx = tx.objectStore('steps').index('guideId');
+    stepsIdx.openCursor(IDBKeyRange.only(guideId)).onsuccess = (e) => {
       const c = e.target.result;
-      if (c) { if (c.value.guideId === guideId) c.delete(); c.continue(); }
+      if (c) { c.delete(); c.continue(); }
     };
 
     // Delete all screenshots for this guide using the guideId index
@@ -219,86 +224,11 @@ async function handleMessage(message, sender, sendResponse) {
 
   // ── processStep ────────────────────────────────────────────────────────────
   if (message.action === 'processStep') {
-    // GUARD: Ensure we only process steps if recording is strictly active
-    if (!isRecording) {
-      sendResponse({ error: 'not_recording' });
-      return;
-    }
-
-    // 1. Quota check — attempt LRU cleanup if critical
-    const quota = await checkQuota();
-    if (quota.critical) {
-      const cleaned = await cleanupOldestGuide();
-      if (!cleaned) { sendResponse({ error: 'storage_full', quota }); return; }
-      const after = await checkQuota();
-      if (after.critical) { sendResponse({ error: 'storage_full', quota: after }); return; }
-    }
-
-    // 2. Ensure active guide exists
-    if (!currentGuide) {
-      const res = await new Promise(r => chrome.storage.local.get(['highlightColor'], r));
-      currentGuide = {
-        id:        'guide_' + Date.now(),
-        title:     'Guide created ' + new Date().toLocaleString(),
-        url:       sender.tab?.url || 'Unknown URL',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        stepCount: 0,
-        defaultColor: res.highlightColor || 'red'
-      };
-      await saveGuide(currentGuide);
-      persistState();
-    }
-
-    // 3. Max-steps guard
-    if (currentGuide.stepCount >= MAX_STEPS) {
-      sendResponse({ error: 'max_steps_reached', max: MAX_STEPS });
-      return;
-    }
-
-    const step       = message.step;
-    step.id          = Date.now() + '-' + Math.random().toString(36).slice(2, 9);
-    step.guideId     = currentGuide.id;
-    currentGuide.stepCount += 1;
-    currentGuide.updatedAt  = new Date().toISOString();
-
-    // 4. Capture → compress → store as Blob (no base64 in IndexedDB)
-    try {
-      const windowId = sender.tab ? sender.tab.windowId : null;
-      // BUG: captureVisibleTab can hang on unresponsive tabs; added 3s timeout
-      const dataUrl = await Promise.race([
-        new Promise(res => {
-          chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 90 }, (url) => {
-            if (chrome.runtime.lastError) res(null); else res(url);
-          });
-        }),
-        new Promise(res => setTimeout(() => res(null), 3000))
-      ]);
-
-      if (dataUrl) {
-        const blob = await compressScreenshot(dataUrl);
-        if (blob) {
-          const ssId = 'ss_' + step.id; // step.id is already collision-safe
-          await saveScreenshot({ id: ssId, guideId: currentGuide.id, blob });
-          step.screenshotId = ssId;   // lightweight reference — no base64 in step record
-          // Accumulate this guide's total screenshot storage cost
-          currentGuide.storageBytes = (currentGuide.storageBytes || 0) + blob.size;
-        }
-      }
-    } catch (e) {
-    }
-
-    // 5. Persist step + guide atomically
-    await Promise.all([saveStep(step), saveGuide(currentGuide)]);
-
-    // 6. Broadcast new step to Dashboard and other listeners
-    broadcast({ 
-      action: 'processStep', 
-      step, 
-      guideId: currentGuide.id 
-    });
-
-    sendResponse({ success: true, stepId: step.id, quota });
+    const step = message.step;
+    
+    // Add to queue and process
+    stepQueue.push({ step, sender, sendResponse });
+    processNextStep();
     return;
   }
 
@@ -452,36 +382,54 @@ async function handleMessage(message, sender, sendResponse) {
   // ── deleteStep ─────────────────────────────────────────────────────────────
   if (message.action === 'deleteStep') {
     const tx = db.transaction(['steps', 'screenshots', 'guides'], 'readwrite');
-    const stepReq = tx.objectStore('steps').get(message.stepId);
-    stepReq.onsuccess = (e) => {
+    const stepsStore = tx.objectStore('steps');
+    const ssStore    = tx.objectStore('screenshots');
+    const guideStore = tx.objectStore('guides');
+
+    stepsStore.get(message.stepId).onsuccess = (e) => {
       const step = e.target.result;
-      if (step) {
-        tx.objectStore('steps').delete(message.stepId);
-        if (step.screenshotId) {
-          tx.objectStore('screenshots').delete(step.screenshotId);
-        }
-        const guideReq = tx.objectStore('guides').get(step.guideId);
-        guideReq.onsuccess = (e2) => {
-          const guide = e2.target.result;
+      if (!step) {
+        sendResponse({ error: 'Step not found' });
+        return;
+      }
+
+      const guideId = step.guideId;
+      const ssId    = step.screenshotId;
+
+      // 1. Delete the step
+      stepsStore.delete(message.stepId);
+
+      // 2. Handle screenshot deletion and guide updates
+      if (ssId) {
+        ssStore.get(ssId).onsuccess = (e2) => {
+          const ss = e2.target.result;
+          const ssSize = ss?.blob?.size || 0;
+          ssStore.delete(ssId);
+
+          guideStore.get(guideId).onsuccess = (e3) => {
+            const guide = e3.target.result;
+            if (guide) {
+              guide.stepCount = Math.max(0, guide.stepCount - 1);
+              guide.storageBytes = Math.max(0, (guide.storageBytes || 0) - ssSize);
+              guide.updatedAt = new Date().toISOString();
+              guideStore.put(guide);
+            }
+          };
+        };
+      } else {
+        guideStore.get(guideId).onsuccess = (e3) => {
+          const guide = e3.target.result;
           if (guide) {
             guide.stepCount = Math.max(0, guide.stepCount - 1);
             guide.updatedAt = new Date().toISOString();
-            // BUG 5: also subtract the deleted screenshot's byte cost
-            if (step.screenshotId && guide.storageBytes) {
-              const avgBytes = guide.stepCount > 0
-                ? Math.round(guide.storageBytes / (guide.stepCount + 1))
-                : guide.storageBytes;
-              guide.storageBytes = Math.max(0, guide.storageBytes - avgBytes);
-            }
-            tx.objectStore('guides').put(guide);
+            guideStore.put(guide);
           }
         };
-      } else {
-        sendResponse({ error: 'Step not found' });
       }
     };
+
     tx.oncomplete = () => sendResponse({ success: true });
-    tx.onerror = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); // BUG D
+    tx.onerror    = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' });
     return;
   }
 
@@ -516,4 +464,81 @@ async function handleMessage(message, sender, sendResponse) {
     tx.onerror = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); // BUG C
     return;
   }
+}
+async function processNextStep() {
+  if (isProcessing || stepQueue.length === 0) return;
+  isProcessing = true;
+
+  const { step, sender, sendResponse } = stepQueue.shift();
+
+  try {
+    // 1. Quota check
+    const quota = await checkQuota();
+    if (quota.critical) {
+      const cleaned = await cleanupOldestGuide();
+      if (!cleaned) { sendResponse({ error: 'storage_full', quota }); isProcessing = false; processNextStep(); return; }
+      const after = await checkQuota();
+      if (after.critical) { sendResponse({ error: 'storage_full', quota: after }); isProcessing = false; processNextStep(); return; }
+    }
+
+    // 2. Ensure active guide exists
+    if (!currentGuide) {
+      const res = await new Promise(r => chrome.storage.local.get(['highlightColor'], r));
+      currentGuide = {
+        id:        'guide_' + Date.now(),
+        title:     'Guide created ' + new Date().toLocaleString(),
+        url:       sender.tab?.url || 'Unknown URL',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        stepCount: 0,
+        defaultColor: res.highlightColor || 'red'
+      };
+      await saveGuide(currentGuide);
+      persistState();
+    }
+
+    // 3. Max-steps guard
+    if (currentGuide.stepCount >= MAX_STEPS) {
+      sendResponse({ error: 'max_steps_reached', max: MAX_STEPS });
+      isProcessing = false;
+      processNextStep();
+      return;
+    }
+
+    step.id          = Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+    step.guideId     = currentGuide.id;
+    currentGuide.stepCount += 1;
+    currentGuide.updatedAt  = new Date().toISOString();
+
+    // 4. Capture → compress → store
+    const windowId = sender.tab ? sender.tab.windowId : null;
+    const dataUrl = await Promise.race([
+      new Promise(res => {
+        chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 90 }, (url) => {
+          if (chrome.runtime.lastError) res(null); else res(url);
+        });
+      }),
+      new Promise(res => setTimeout(() => res(null), 3000))
+    ]);
+
+    if (dataUrl) {
+      const blob = await compressScreenshot(dataUrl);
+      if (blob) {
+        const ssId = 'ss_' + step.id;
+        await saveScreenshot({ id: ssId, guideId: currentGuide.id, blob });
+        step.screenshotId = ssId;
+        currentGuide.storageBytes = (currentGuide.storageBytes || 0) + blob.size;
+      }
+    }
+
+    await Promise.all([saveStep(step), saveGuide(currentGuide)]);
+    broadcast({ action: 'processStep', step, guideId: currentGuide.id });
+    sendResponse({ success: true, stepId: step.id });
+
+  } catch (e) {
+    sendResponse({ error: e.toString() });
+  }
+
+  isProcessing = false;
+  processNextStep();
 }
