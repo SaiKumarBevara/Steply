@@ -563,6 +563,31 @@ export default function Dashboard() {
     downloadFile(blob, `${sanitizeFilename(selectedGuide.title)}.docx`); // BUG N
   };
 
+  const exportJSON = async () => {
+    if (!selectedGuide?.steps?.length) return;
+    
+    // Create a deep copy of the guide to avoid mutating state
+    const exportData = JSON.parse(JSON.stringify(selectedGuide));
+    
+    // Process steps to include base64 screenshots
+    for (let i = 0; i < exportData.steps.length; i++) {
+      const step = exportData.steps[i];
+      if (step.screenshot || step.screenshotId) {
+        const stepColor = step.color || selectedGuide.defaultColor || 'red';
+        const annotated = await getAnnotatedDataUrl(selectedGuide.steps[i], stepColor);
+        if (annotated) {
+          step.screenshotDataUrl = annotated;
+        }
+      }
+    }
+
+    const jsonString = JSON.stringify(exportData, null, 2);
+    downloadFile(
+      new Blob([jsonString], { type: 'application/json' }), 
+      `${sanitizeFilename(selectedGuide.title)}.json`
+    );
+  };
+
   const filteredGuides = guides.filter(g => 
     (g.title || 'Untitled').toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -719,6 +744,9 @@ export default function Dashboard() {
                         </button>
                         <button className="export-dropdown-item" onClick={() => { exportWord(); setExportOpen(false); }}>
                           <i className="ti ti-file-type-doc" style={{ fontSize: '15px' }}></i> Export Word
+                        </button>
+                        <button className="export-dropdown-item" onClick={() => { exportJSON(); setExportOpen(false); }}>
+                          <i className="ti ti-code" style={{ fontSize: '15px' }}></i> Export JSON
                         </button>
                       </div>
                     )}
