@@ -65,15 +65,18 @@
     .nav-logo {
       width: 28px;
       height: 28px;
-      background: var(--blue);
       border-radius: 7px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: 'DM Mono', monospace;
-      font-weight: 500;
-      font-size: 13px;
-      color: white;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .nav-logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
     }
 
     .nav-name {
@@ -329,7 +332,9 @@
 
   <nav>
     <a class="nav-brand" href="#">
-      <div class="nav-logo">S</div>
+      <div class="nav-logo">
+        <img src="images/icon128.png" alt="Steply Logo">
+      </div>
       <span class="nav-name">Steply</span>
     </a>
     <span class="nav-badge">Privacy Policy</span>
@@ -342,9 +347,9 @@
       <div class="meta">
         <span>Steply Chrome Extension</span>
         <span class="meta-dot"></span>
-        <span>Effective: May 6, 2026</span>
+        <span>Effective: May 15, 2026</span>
         <span class="meta-dot"></span>
-        <span>Last updated: May 6, 2026</span>
+        <span>Last updated: May 15, 2026</span>
       </div>
     </div>
 
@@ -390,6 +395,10 @@
           <span class="fact-check">✓</span>
           <span><strong>Local storage only.</strong> All guides, steps, and screenshots are stored in your browser's
             IndexedDB — local to your device.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>Local Redaction.</strong> The redaction tool (blurring) runs entirely on your local machine using an offscreen canvas. No image data is ever sent to a server for processing.</span>
         </li>
       </ul>
     </div>

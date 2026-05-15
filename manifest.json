@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Steply",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Auto-generate step-by-step guides by recording user interactions",
   "permissions": [
     "activeTab",
@@ -36,5 +36,14 @@
       "run_at": "document_start",
       "all_frames": true
     }
-  ]
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+G",
+        "mac": "Alt+Shift+G"
+      },
+      "description": "Open Steply recording popup"
+    }
+  }
 }

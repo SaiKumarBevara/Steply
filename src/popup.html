@@ -64,6 +64,10 @@
       transition: background 0.2s;
     }
     .btn-secondary:hover { background: var(--color-background-secondary); }
+
+    /* Hover effects for buttons (Fixes CSP violations) */
+    #privacyBtn:hover { color: var(--color-text-primary) !important; }
+    #tabGuides:hover { color: var(--color-text-primary) !important; }
   </style>
 </head>
 <body>
@@ -82,7 +86,7 @@
         <span id="statusDot" style="width: 6px; height: 6px; background: #1D9E75; border-radius: 50%; display: inline-block; transition: all 0.2s;"></span>
         <span id="statusText">Ready</span>
       </span>
-      <button id="privacyBtn" title="Privacy Policy" style="background: none; border: none; cursor: pointer; color: var(--color-text-secondary); padding: 4px; display: flex; align-items: center; transition: color 0.15s;" onmouseover="this.style.color='var(--color-text-primary)'" onmouseout="this.style.color='var(--color-text-secondary)'">
+      <button id="privacyBtn" title="Privacy Policy" style="background: none; border: none; cursor: pointer; color: var(--color-text-secondary); padding: 4px; display: flex; align-items: center; transition: color 0.15s;">
         <i class="ti ti-shield-lock" style="font-size: 16px;" aria-hidden="true"></i>
       </button>
     </div>
@@ -128,7 +132,7 @@
       <i class="ti ti-aperture" style="font-size: 18px;" aria-hidden="true"></i>
       <span style="font-size: 11px; font-weight: 500;">Capture</span>
     </button>
-    <button id="tabGuides" style="flex: 1; padding: 12px 0; background: transparent; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--color-text-tertiary); border-bottom: 2px solid transparent;" onmouseover="this.style.color='#111827'" onmouseout="this.style.color='var(--color-text-tertiary)'">
+    <button id="tabGuides" style="flex: 1; padding: 12px 0; background: transparent; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--color-text-tertiary); border-bottom: 2px solid transparent;">
       <i class="ti ti-book" style="font-size: 18px;" aria-hidden="true"></i>
       <span style="font-size: 11px;">Guides</span>
     </button>

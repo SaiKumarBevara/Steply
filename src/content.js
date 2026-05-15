@@ -30,6 +30,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Helper: generate unique CSS selector
 function getCSSSelector(el) {
   if (!(el instanceof Element)) return '';
+  
+  // Prioritize robust attributes that are unlikely to change
+  const robustAttrs = ['data-testid', 'data-qa', 'data-cy', 'aria-label', 'id'];
+  for (const attr of robustAttrs) {
+    const val = el.getAttribute(attr);
+    if (val) {
+      if (attr === 'id') return '#' + val;
+      return `[${attr}="${val}"]`;
+    }
+  }
+
   const path = [];
   while (el) {
     let selector = el.nodeName.toLowerCase();
@@ -48,7 +59,7 @@ function getCSSSelector(el) {
     }
     path.unshift(selector);
 
-    // Shadow DOM traversal: if parent is a ShadowRoot, go to its host element
+    // Shadow DOM traversal
     let parent = el.parentNode;
     if (!parent && el.getRootNode) {
       const root = el.getRootNode();
@@ -64,31 +75,29 @@ function getCSSSelector(el) {
 // BUG 9: added null / non-element parentNode guard to avoid crash on detached nodes
 
 // Helper: generate action description
-function generateActionDescription(el) {
+function generateActionDescription(el, typeOverride = null) {
   const tagName = el.tagName.toLowerCase();
   const type = el.type ? el.type.toLowerCase() : '';
+  const actionType = typeOverride || 'click';
   
-  // Try to get meaningful text
-  let labelText = el.getAttribute('aria-label') || '';
-  if (!labelText && el.getAttribute('aria-labelledby')) {
-    const labelEl = document.getElementById(el.getAttribute('aria-labelledby'));
-    if (labelEl) labelText = labelEl.innerText;
-  }
-  if (!labelText && el.innerText) {
-    // Clean up text and truncate if too long
-    const text = el.innerText.trim().replace(/\n/g, ' ');
-    labelText = text.length > 30 ? text.substring(0, 30) + '...' : text;
-  }
-  if (!labelText && el.placeholder) {
-    labelText = el.placeholder;
-  }
-  if (!labelText && el.value && type !== 'password') {
-    labelText = el.value;
+  // Try to get meaningful text using the same logic as getFieldLabel
+  let labelText = getFieldLabel(el);
+  if (labelText === 'a field') {
+      // fallback for non-input elements
+      if (el.innerText) {
+        const text = el.innerText.trim().replace(/\n/g, ' ');
+        labelText = text.length > 30 ? text.substring(0, 30) + '...' : text;
+      }
   }
   
-  const formattedLabel = labelText ? `"${labelText}"` : 'the';
-  
-  // Format the description
+  const formattedLabel = labelText && labelText !== 'a field' ? `"${labelText}"` : 'the';
+  const nameSuffix = (labelText && labelText !== 'a field') ? '' : ` ${tagName}`;
+
+  if (actionType === 'scroll') {
+    return `Scrolled ${formattedLabel}${nameSuffix}`;
+  }
+
+  // Format the description for clicks
   if (tagName === 'button' || (tagName === 'input' && (type === 'submit' || type === 'button'))) {
     return `Click on ${formattedLabel} button`;
   } else if (tagName === 'a') {
@@ -99,13 +108,13 @@ function generateActionDescription(el) {
     if (type === 'checkbox' || type === 'radio') {
       return `Check ${formattedLabel} ${type}`;
     }
-    return `Enter text in ${formattedLabel} field`;
+    return `Click on ${formattedLabel} field`;
   } else if (tagName === 'select') {
     return `Select an option in ${formattedLabel} dropdown`;
   } else if (tagName === 'form') {
     return `Submit ${formattedLabel} form`;
   } else {
-    return `Click on ${formattedLabel} element`;
+    return `Click on ${formattedLabel}${nameSuffix} element`;
   }
 }
 
@@ -117,24 +126,18 @@ document.addEventListener('click', (event) => {
   const path = event.composedPath && event.composedPath();
   const target = (path && path.length > 0) ? path[0] : event.target;
   
-  // Skip if not an element
   if (!(target instanceof Element)) return;
-  
-  // Skip script and style tags
-  const tagName = target.tagName.toLowerCase();
-  if (tagName === 'script' || tagName === 'style') return;
 
-  // BUG I: skip click recording for text-input elements — they are already
-  // captured by the blur handler (which records the entered value). Recording
-  // the click here would produce a redundant "Enter text in ... field" duplicate.
-  const inputTextTypes = ['text', 'email', 'password', 'number', 'search', 'url', 'tel'];
-  if (
-    tagName === 'textarea' ||
-    (tagName === 'input' && inputTextTypes.includes((target.type || '').toLowerCase()))
-  ) return;
+  // Refine target: if the user clicked an icon or SVG inside a button/link,
+  // we should target the interactive parent for a better CSS selector.
+  const interactiveTarget = path.find(el => 
+    el instanceof Element && 
+    (el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT' || 
+     el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || el.getAttribute('role') === 'button')
+  ) || target;
 
-  const selector = getCSSSelector(target);
-  const description = generateActionDescription(target);
+  const selector = getCSSSelector(interactiveTarget);
+  const description = generateActionDescription(interactiveTarget);
   const rect = target.getBoundingClientRect();
   
   const elementData = {
@@ -149,12 +152,31 @@ document.addEventListener('click', (event) => {
     type: target.type || undefined,
     ariaLabel: target.getAttribute('aria-label') || undefined
   };
+
+  // Premium Iframe Support: Adjust coordinates if inside a frame
+  if (window !== window.top) {
+    try {
+      // Find this frame in the parent's document to get its offset
+      // This works for same-origin frames. For cross-origin, we'd need 
+      // the background script's help as implemented in background.js.
+      const frame = window.frameElement;
+      if (frame) {
+        const frameRect = frame.getBoundingClientRect();
+        elementData.x += frameRect.left;
+        elementData.y += frameRect.top;
+      }
+    } catch (e) {
+      // Cross-origin: the coordinates will be subframe-relative.
+      // background.js will handle global mapping if needed.
+    }
+  }
   
   const step = {
     action: description,
     elementData,
     timestamp: new Date().toISOString(),
-    url: window.location.href
+    url: window.location.href,
+    stepType: 'click'
   };
   
   // Send step immediately to background worker
@@ -170,67 +192,97 @@ document.addEventListener('click', (event) => {
 // ─── Scroll Tracking ─────────────────────────────────────────────────────────
 let lastScrollY = window.scrollY;
 let lastScrollX = window.scrollX;
+const elementBaselines = new Map(); // tracking for overflow elements
 let scrollTimer = null;
-const SCROLL_DEBOUNCE_MS = 800;  // wait until user stops scrolling
-const SCROLL_MIN_PX = 80;         // ignore tiny scroll jitters
+const SCROLL_DEBOUNCE_MS = 500;  // more responsive
+const SCROLL_MIN_PX = 50;        // catch smaller movements
 
-window.addEventListener('scroll', () => {
+window.addEventListener('scroll', (event) => {
   if (!isRecording) return;
 
-  // BUG H: capture position at scroll event time so accumulated drift inside
-  // the debounce callback doesn't grow unboundedly on slow-send paths.
-  const capturedScrollY = window.scrollY;
-  const capturedScrollX = window.scrollX;
+  // Identify the actual scroll target (window or specific element)
+  const target = (event.target === document || event.target === window) ? window : event.target;
+  const isWindow = target === window;
+  
+  const currentY = isWindow ? window.scrollY : target.scrollTop;
+  const currentX = isWindow ? window.scrollX : target.scrollLeft;
+
+  // Capture position immediately to prevent drift during debounce
+  const capturedY = currentY;
+  const capturedX = currentX;
 
   clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => {
-    const deltaY = capturedScrollY - lastScrollY;
-    const deltaX = capturedScrollX - lastScrollX;
+    let baseline = isWindow 
+      ? { y: lastScrollY, x: lastScrollX } 
+      : (elementBaselines.get(target) || { y: 0, x: 0 });
+
+    const deltaY = capturedY - baseline.y;
+    const deltaX = capturedX - baseline.x;
 
     // Only record if the scroll was meaningful
     if (Math.abs(deltaY) < SCROLL_MIN_PX && Math.abs(deltaX) < SCROLL_MIN_PX) return;
 
-    // BUG 8: guard against division by zero on short/non-scrollable pages
-    const scrollableHeight = document.body.scrollHeight - window.innerHeight;
-    const scrollPercent = scrollableHeight > 0
-      ? Math.round((window.scrollY / scrollableHeight) * 100)
-      : 0;
-    const position = scrollPercent <= 10 ? 'top' 
-                   : scrollPercent >= 90 ? 'bottom' 
-                   : `${scrollPercent}% down the page`;
-
     let description = '';
-    if (Math.abs(deltaY) >= Math.abs(deltaX)) {
-      if (deltaY > 0) {
-        description = `Scrolled down to view more content (now at ${position})`;
+    let elementData = null;
+
+    if (isWindow) {
+      const scrollableHeight = document.documentElement.scrollHeight - window.innerHeight;
+      const scrollPercent = scrollableHeight > 0
+        ? Math.round((capturedY / scrollableHeight) * 100)
+        : 0;
+      const position = scrollPercent <= 10 ? 'top' 
+                     : scrollPercent >= 90 ? 'bottom' 
+                     : `${scrollPercent}% down the page`;
+
+      if (Math.abs(deltaY) >= Math.abs(deltaX)) {
+        description = deltaY > 0 
+          ? `Scrolled down to view more content (now at ${position})`
+          : `Scrolled back up (now at ${position})`;
       } else {
-        description = `Scrolled back up (now at ${position})`;
+        description = deltaX > 0 
+          ? 'Scrolled right to view more content'
+          : 'Scrolled left to view more content';
       }
     } else {
-      description = deltaX > 0 
-        ? 'Scrolled right to view more content'
-        : 'Scrolled left to view more content';
+      // Element-level scroll
+      const elDesc = generateActionDescription(target, 'scroll');
+      description = deltaY > 0 ? `${elDesc} down` : `${elDesc} up`;
+      
+      const rect = target.getBoundingClientRect();
+      elementData = {
+        selector: getCSSSelector(target),
+        tagName: target.tagName.toLowerCase(),
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        width: rect.width,
+        height: rect.height,
+        windowWidth: window.innerWidth,
+        windowHeight: window.innerHeight
+      };
     }
 
     const step = {
       action: description,
-      elementData: null,
+      elementData,
       timestamp: new Date().toISOString(),
       url: window.location.href,
       stepType: 'scroll'
     };
 
-    // BUG 11: only update baseline after the message send succeeds,
-    // so a failed send doesn't permanently swallow the scroll delta.
     chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
       if (!chrome.runtime.lastError) {
-        lastScrollY = capturedScrollY;
-        lastScrollX = capturedScrollX;
+        if (isWindow) {
+          lastScrollY = capturedY;
+          lastScrollX = capturedX;
+        } else {
+          elementBaselines.set(target, { y: capturedY, x: capturedX });
+        }
       }
     });
   }, SCROLL_DEBOUNCE_MS);
 
-}, { passive: true }); // passive: true = no perf impact on scroll
+}, true); // Use capture phase to catch scrolls on overflow elements
 
 // ─── Text Input Tracking ──────────────────────────────────────────────────────
 // Fires when the user leaves a field (blur), so we capture the final value

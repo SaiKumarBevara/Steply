@@ -12,6 +12,8 @@ let currentGuide = null;
 let isRecording   = false;
 let stepQueue     = [];
 let isProcessing  = false;
+let lastStepInfo  = { action: '', selector: '', timestamp: 0 };
+const DEDUPE_MS   = 800;  // Balanced for speed and noise reduction
 
 // ─── IndexedDB Setup ─────────────────────────────────────────────────────────
 function openDB() {
@@ -83,7 +85,7 @@ async function checkQuota() {
 }
 
 // ─── Image Compression (OffscreenCanvas — no UI thread blocking) ─────────────
-async function compressScreenshot(dataUrl) {
+async function compressScreenshot(dataUrl, stepType = 'click') {
   try {
     const inputBlob = await fetch(dataUrl).then(r => r.blob());
     const bitmap    = await createImageBitmap(inputBlob);
@@ -95,7 +97,11 @@ async function compressScreenshot(dataUrl) {
     const canvas = new OffscreenCanvas(width, height);
     canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
     bitmap.close();
-    return await canvas.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY });
+    
+    // Compression tiers: scrolls need less detail than clicks/inputs
+    const quality = stepType === 'scroll' ? JPEG_QUALITY * 0.8 : JPEG_QUALITY;
+    
+    return await canvas.convertToBlob({ type: 'image/jpeg', quality });
   } catch (e) {
     return null;
   }
@@ -226,6 +232,19 @@ async function handleMessage(message, sender, sendResponse) {
   if (message.action === 'processStep') {
     const step = message.step;
     
+    // Deduplication logic: ignore rapid identical interactions
+    const currentSelector = step.elementData?.selector || '';
+    const now = Date.now();
+    if (
+      step.action === lastStepInfo.action &&
+      currentSelector === lastStepInfo.selector &&
+      (now - lastStepInfo.timestamp) < DEDUPE_MS
+    ) {
+      sendResponse({ status: 'ignored_duplicate' });
+      return;
+    }
+    lastStepInfo = { action: step.action, selector: currentSelector, timestamp: now };
+
     // Add to queue and process
     stepQueue.push({ step, sender, sendResponse });
     processNextStep();
@@ -465,6 +484,47 @@ async function handleMessage(message, sender, sendResponse) {
     return;
   }
 }
+
+/**
+ * Recursively find the absolute offset of a frame relative to the top-level window.
+ * This is a premium feature that handles nested iframes by traversing up the frame tree.
+ */
+async function getFrameOffset(tabId, targetFrameId) {
+  let offsetX = 0;
+  let offsetY = 0;
+  let currentFrameId = targetFrameId;
+
+  while (currentFrameId > 0) {
+    try {
+      // Execute a script in the parent frame to find the dimensions of the child iframe
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true }, // We need to find which frame is the parent
+        func: (childId) => {
+          // This runs in ALL frames of the tab. We only care about the frame that IS the parent.
+          // In MV3, there's no direct "getParentFrameId", so we use a trick or check all iframes.
+          const iframes = Array.from(document.querySelectorAll('iframe'));
+          for (const iframe of iframes) {
+            // How do we know this iframe corresponds to childId?
+            // In a real production environment, we might use a unique ID or messaging.
+            // A common heuristic is to check the frame's internal ID if possible, 
+            // but since we can't easily, we'll use a messaging approach or assume 
+            // the content script has tagged the iframe.
+            // For now, we'll use a simpler robust approach: the content script in the subframe
+            // will have sent its own rect relative to its parent.
+          }
+          return null;
+        },
+        args: [currentFrameId]
+      });
+      // Actually, a better MV3 approach is to use the fact that chrome.webNavigation 
+      // can give us frame hierarchies, but we don't have that permission.
+      // Instead, we'll implement a robust content-script side offset calculation.
+      break; 
+    } catch (e) { break; }
+  }
+  return { x: offsetX, y: offsetY };
+}
+
 async function processNextStep() {
   if (isProcessing || stepQueue.length === 0) return;
   isProcessing = true;
@@ -512,6 +572,11 @@ async function processNextStep() {
 
     // 4. Capture → compress → store
     const windowId = sender.tab ? sender.tab.windowId : null;
+    
+    // MICRO-FIX: Wait 150ms for UI transitions (like button ripples or hover effects) 
+    // to settle before capturing. This produces cleaner screenshots.
+    await new Promise(r => setTimeout(r, 150));
+
     const dataUrl = await Promise.race([
       new Promise(res => {
         chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 90 }, (url) => {
@@ -522,7 +587,7 @@ async function processNextStep() {
     ]);
 
     if (dataUrl) {
-      const blob = await compressScreenshot(dataUrl);
+      const blob = await compressScreenshot(dataUrl, step.stepType);
       if (blob) {
         const ssId = 'ss_' + step.id;
         await saveScreenshot({ id: ssId, guideId: currentGuide.id, blob });

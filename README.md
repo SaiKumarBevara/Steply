@@ -13,9 +13,10 @@
 6. [Using the Dashboard](#using-the-dashboard)
 7. [Exporting a Guide](#exporting-a-guide)
 8. [Resume Recording (Add Steps to Existing Guide)](#resume-recording)
-9. [Features Reference](#features-reference)
-10. [Project Structure](#project-structure)
-11. [Troubleshooting](#troubleshooting)
+9. [Keyboard Shortcut](#keyboard-shortcut)
+10. [Features Reference](#features-reference)
+11. [Project Structure](#project-structure)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -33,7 +34,7 @@ Make sure you have the following installed:
 
 1. Open a terminal and navigate to the project folder:
    ```
-   cd C:\Users\SaikumarBevara\Downloads\files
+    cd c:\Users\SaikumarBevara\Downloads\Extensions\Steply
    ```
 
 2. Install all dependencies:
@@ -64,7 +65,7 @@ This compiles all source files from `/src` into the `/dist` folder that Chrome l
 3. Click **"Load unpacked"**
 4. Select the `/dist` folder:
    ```
-   C:\Users\SaikumarBevara\Downloads\files\dist
+    c:\Users\SaikumarBevara\Downloads\Extensions\Steply\dist
    ```
 5. The **Steply** extension will appear in your extension list
 6. Pin it to the toolbar by clicking the puzzle icon (🧩) → pin Steply
@@ -132,13 +133,55 @@ The Dashboard is where you view, edit, and manage all your guides.
 
 Open a guide in the Dashboard, then use the export buttons in the top-right:
 
-| Button | Output | Contains |
-|---|---|---|
 | **Export PDF** | `.pdf` file | All steps with annotated screenshots |
 | **Export Word** | `.docx` file | All steps with embedded annotated images |
 | **Export Markdown** | `.md` file | All steps with inline base64 screenshots |
 
 > **Annotated screenshots:** All exports include the red highlight box drawn over the clicked element — identical to what you see in the dashboard.
+
+---
+
+## Redaction Workspace (Privacy & Compliance)
+
+Steply includes a production-grade Redaction tool to help you obscure sensitive data (PII, passwords, internal keys) before sharing your guides.
+
+### How to Redact:
+1. Open a guide in the **Dashboard**.
+2. Click the **🛡️ Shield** icon on any step card.
+3. In the Redaction Workspace, **drag to draw a box** over sensitive information.
+4. **Smart Blur:** Steply uses a density-aware blur algorithm that ensures even small text (like emails) is irreversibly obscured.
+5. Click **"Apply & Save"** to update the step.
+
+---
+
+## Ultimate Single-Click Copy
+
+For ultra-fast sharing, Steply supports an advanced "Copy Step" feature that captures everything in one go.
+
+### How it works:
+- Click the **📋 Copy** icon on any step card.
+- Steply generates a high-quality annotated image and bundles it with the step text.
+- **Pasting:**
+    - **Slack/Gmail/Teams:** Pastes the Title, Description, and the Screenshot image together!
+    - **Word/Docs:** Perfectly formatted rich-text with embedded image.
+    - **Notepad:** Gracefully falls back to plain text instructions.
+
+---
+
+## Bulk Export Manager
+
+Steply includes a powerful Bulk Export feature that allows you to merge multiple guides into a single professional document.
+
+### How to use Bulk Export:
+1. Open the **Dashboard**.
+2. Click the **"Bulk Export"** button in the sidebar (or **"Exit"** to return to normal mode).
+3. **Select Guides:** Click the checkboxes next to the guides you want to include.
+4. **Customize Title:** Click the ✏️ icon next to the main title to set a custom name for your merged document.
+5. **Reorder:** Drag and drop the selected guides in the sidebar to change their sequence in the final export.
+6. **Export:** Use the export dropdown in the top-right to generate your combined PDF, Word, or Markdown file.
+
+> **Standardized Schema:** Every export follows a strict JSON-compatible schema, ensuring consistent descriptions and metadata across all formats.
+
 
 ---
 
@@ -156,6 +199,16 @@ You can add more steps to an existing guide at any time:
 
 ---
 
+## Keyboard Shortcut
+
+You can open the Steply popup at any time using your keyboard:
+
+- **Shortcut:** `Alt + Shift + G` (Windows, Mac, and Linux)
+
+> **Note:** If the shortcut doesn't work, you can customize it by going to `chrome://extensions/shortcuts` in your browser.
+
+---
+
 ## Features Reference
 
 ### 🎯 Recording Engine
@@ -165,8 +218,10 @@ You can add more steps to an existing guide at any time:
 | **Text input tracking** | Records what the user typed in any field when they leave it (`blur`). Password fields are masked as `••••••••` |
 | **Scroll tracking** | Debounced (800ms), captures direction + page position e.g. *"Scrolled down to view more content (now at 45% down the page)"* |
 | **Shadow DOM support** | Uses `composedPath()` to track clicks inside complex frameworks (Mendix, Salesforce, etc.) |
+| **Interactive Target Detection** | Hardened selector engine climbs the DOM tree to target buttons/links rather than raw icons, ensuring stable CSS selectors. |
 | **iframe support** | `all_frames: true` in manifest — works inside embedded iframes |
 | **Page navigation resilience** | On every new page load, content script asks the background for its recording state and resumes automatically |
+| **Capture Settle Delay** | 150ms delay before screenshot capture to allow hover animations and ripples to complete for cleaner visuals. |
 
 ### 📸 Screenshots
 | Feature | Details |
@@ -192,6 +247,8 @@ You can add more steps to an existing guide at any time:
 | **PDF** | All steps with text + annotated screenshots via `jsPDF` |
 | **Word (.docx)** | All steps with embedded annotated images via `docx` library |
 | **Markdown (.md)** | Steps with inline base64-embedded annotated screenshots |
+| **Bulk Export** | Merge multiple guides into a single PDF, Word, or Markdown file |
+
 
 ### 🖥️ UI
 | Feature | Details |

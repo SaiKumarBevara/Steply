@@ -72,6 +72,40 @@ const HIGHLIGHT_COLORS = {
   none:  null,
 };
 
+// Renders screenshot to dataURL with annotations.
+// BUG K: renamed result to screenshotResult to avoid collision with canvas result.
+async function getAnnotatedDataUrl(step, colorKey) {
+  const screenshotResult = await resolveScreenshotUrl(step);
+  if (!screenshotResult) return null;
+  const { url: srcUrl, revoke } = screenshotResult;
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas');
+    const ctx    = canvas.getContext('2d');
+    const img    = new Image();
+    img.onload = () => {
+      canvas.width = img.width; canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      const palette = HIGHLIGHT_COLORS[colorKey];
+      const ed = step.elementData;
+      if (palette && ed) {
+        const sx = img.width / ed.windowWidth, sy = img.height / ed.windowHeight;
+        const x  = ed.x * sx, y = ed.y * sy;
+        const w  = (ed.width || 120) * sx, h = (ed.height || 60) * sy;
+        ctx.strokeStyle = palette.stroke; ctx.lineWidth = 4;
+        ctx.strokeRect(x - w/2, y - h/2, w, h);
+        ctx.fillStyle = palette.fill;
+        ctx.fillRect(x - w/2, y - h/2, w, h);
+      }
+      // Use PNG for clipboard support (JPEG is often rejected by browsers for ClipboardItem)
+      const dataUrl = canvas.toDataURL('image/png');
+      revoke();
+      resolve(dataUrl);
+    };
+    img.onerror = () => { revoke(); resolve(null); };
+    img.src = srcUrl;
+  });
+}
+
 function ScreenshotCanvas({ step, highlightColor = 'red' }) {
   const canvasRef = useRef(null);
   // imgRef keeps the decoded image so we can redraw without re-fetching
@@ -147,7 +181,182 @@ function ScreenshotCanvas({ step, highlightColor = 'red' }) {
   return <canvas ref={canvasRef} style={{ maxWidth: '100%', display: 'block' }} />;
 }
 
-const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteStep, updateStepColor, guideColor }) => {
+// ─── Redaction Workspace (Premium Privacy Feature) ──────────────────────────
+function RedactionWorkspace({ step, onSave, onCancel }) {
+  const canvasRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [startPos, setStartPos]   = useState(null);
+  const [currentRect, setCurrentRect] = useState(null);
+  const [img, setImg] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let revokeFn = null;
+    let isMounted = true;
+    (async () => {
+      console.log("[Steply] Loading screenshot for redaction:", step.id);
+      const result = await resolveScreenshotUrl(step);
+      if (!result || !isMounted) {
+        if (isMounted) {
+          setError("Screenshot not found for this step.");
+          setLoading(false);
+        }
+        return;
+      }
+      revokeFn = result.revoke;
+      const image = new Image();
+      image.onload = () => {
+        if (!isMounted) return;
+        setImg(image);
+        setLoading(false);
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = image.width || 1280;
+        canvas.height = image.height || 720;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(image, 0, 0);
+      };
+      image.onerror = (e) => {
+        if (!isMounted) return;
+        setError("Failed to load image.");
+        setLoading(false);
+      };
+      image.src = result.url;
+    })();
+    return () => { 
+      isMounted = false;
+      if (revokeFn) revokeFn(); 
+    };
+  }, [step.id]);
+
+  useEffect(() => {
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [onCancel]);
+
+  const getCanvasPos = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // Clamp to canvas boundaries for high precision
+    let x = (e.clientX - rect.left) * scaleX;
+    let y = (e.clientY - rect.top) * scaleY;
+    return {
+      x: Math.max(0, Math.min(x, canvas.width)),
+      y: Math.max(0, Math.min(y, canvas.height))
+    };
+  };
+
+  const handleMouseDown = (e) => {
+    setIsDrawing(true);
+    setStartPos(getCanvasPos(e));
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDrawing) return;
+    const pos = getCanvasPos(e);
+    setCurrentRect({
+      x: Math.min(startPos.x, pos.x),
+      y: Math.min(startPos.y, pos.y),
+      w: Math.abs(startPos.x - pos.x),
+      h: Math.abs(startPos.y - pos.y)
+    });
+  };
+
+  const handleMouseUp = () => {
+    if (!isDrawing || !currentRect) { setIsDrawing(false); return; }
+    setIsDrawing(false);
+    
+    // Apply Smart Blur: Adjust radius and passes based on selection size
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const { x, y, w, h } = currentRect;
+    
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    
+    // For small areas, we use a smaller radius but MORE passes to ensure opacity
+    const isSmall = w < 40 || h < 40;
+    const radius  = isSmall ? 8 : 16;
+    const passes  = isSmall ? 8 : 4;
+    
+    ctx.filter = `blur(${radius}px)`;
+    for(let i=0; i<passes; i++) {
+        // We draw the canvas onto itself. 
+        // For small areas, this accumulation creates a solid, opaque blur.
+        ctx.drawImage(canvas, x, y, w, h, x, y, w, h);
+    }
+    ctx.restore();
+    
+    // Draw a subtle 'Locked' indicator border
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    
+    setCurrentRect(null);
+  };
+
+  const handleSave = () => {
+    const canvas = canvasRef.current;
+    canvas.toBlob((blob) => {
+      onSave(step, blob);
+    }, 'image/jpeg', 0.9);
+  };
+
+  return (
+    <div className="redact-overlay">
+      <div className="redact-header">
+        <div className="redact-info">
+          <i className="ti ti-shield-lock"></i>
+          <div>
+            <h3>Redaction Mode</h3>
+            <p>Drag to blur sensitive information like emails, names, or keys.</p>
+          </div>
+        </div>
+        <div className="redact-actions">
+          <button className="btn-secondary" onClick={onCancel}>Cancel</button>
+          <button className="btn-primary" onClick={handleSave}>Apply & Save</button>
+        </div>
+      </div>
+      <div className="redact-canvas-container">
+        {loading && <div className="redact-status"><i className="ti ti-loader rotate"></i> Loading...</div>}
+        {error && <div className="redact-status error"><i className="ti ti-alert-circle"></i> {error}</div>}
+        
+        <div className="redact-canvas-wrapper" style={{ position: 'relative', display: (loading || error) ? 'none' : 'inline-block' }}>
+          <canvas 
+            ref={canvasRef}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            className={`redact-canvas ${isDrawing ? 'drawing' : ''}`}
+          />
+          {currentRect && (
+            <div 
+              className="redact-guide-rect"
+              style={{
+                left: (currentRect.x / (canvasRef.current?.width || 1)) * 100 + '%',
+                top: (currentRect.y / (canvasRef.current?.height || 1)) * 100 + '%',
+                width: (currentRect.w / (canvasRef.current?.width || 1)) * 100 + '%',
+                height: (currentRect.h / (canvasRef.current?.height || 1)) * 100 + '%'
+              }}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteStep, updateStepColor, guideColor, onRedact }) => {
   const [desc, setDesc] = useState(step.description || '');
   const [action, setAction] = useState(step.action || '');
   const [isEditingAction, setIsEditingAction] = useState(false);
@@ -219,11 +428,70 @@ const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteSt
             </div>
 
             <span className="step-type">
-              {/* BUG 14: input steps have elementData too — check stepType first */}
-              {step.stepType === 'input' ? 'input' : step.elementData ? 'click' : 'scroll'}
+              {step.stepType || (step.elementData ? 'click' : 'scroll')}
             </span>
             <button className="btn-danger" style={{ padding: '4px', border: 'none' }} onClick={() => deleteStep(step)} title="Delete step">
               <i className="ti ti-trash" style={{ fontSize: '13px' }}></i>
+            </button>
+            <button 
+              className="btn-secondary" 
+              style={{ padding: '4px' }} 
+              onClick={() => onRedact(step)}
+              title="Redact sensitive info"
+            >
+              <i className="ti ti-shield-lock" style={{ fontSize: '13px' }}></i>
+            </button>
+            <button 
+              className="btn-secondary" 
+              style={{ padding: '4px' }} 
+              onClick={async (e) => {
+                const btn = e.currentTarget;
+                const icon = btn.querySelector('i');
+                const originalClass = icon.className;
+                
+                try {
+                  icon.className = 'ti ti-loader rotate';
+                  const activeColor = step.color || guideColor || 'red';
+                  const dataUrl = await getAnnotatedDataUrl(step, activeColor);
+                  
+                  const plainText = `${step.action}${step.description ? '\n' + step.description : ''}`;
+                  const clipboardData = {
+                    'text/plain': new Blob([plainText], { type: 'text/plain' })
+                  };
+
+                  if (dataUrl) {
+                    const response = await fetch(dataUrl);
+                    const blob = await response.blob();
+                    clipboardData['image/png'] = blob;
+                    
+                    // Add HTML part so rich text editors (Gmail, Slack) paste both text and image!
+                    const htmlContent = `
+                      <div style="font-family: sans-serif;">
+                        <h3 style="margin:0 0 8px; color:#185FA5;">${step.action}</h3>
+                        ${step.description ? `<p style="margin:0 0 12px; color:#4b5563;">${step.description}</p>` : ''}
+                        <img src="${dataUrl}" style="max-width:100%; border-radius:8px; border:1px solid #e5e7eb;" />
+                      </div>
+                    `;
+                    clipboardData['text/html'] = new Blob([htmlContent], { type: 'text/html' });
+                  }
+
+                  await navigator.clipboard.write([
+                    new ClipboardItem(clipboardData)
+                  ]);
+                  
+                  icon.className = 'ti ti-check';
+                  setTimeout(() => { icon.className = originalClass; }, 2000);
+                } catch (err) {
+                  console.error('Clipboard error:', err);
+                  // Fallback: copy text only
+                  navigator.clipboard.writeText(step.action);
+                  icon.className = 'ti ti-alert-circle';
+                  setTimeout(() => { icon.className = originalClass; }, 2000);
+                }
+              }}
+              title="Copy step (Text & Image)"
+            >
+              <i className="ti ti-copy" style={{ fontSize: '13px' }}></i>
             </button>
           </div>
         )}
@@ -273,6 +541,16 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery]       = useState('');
   const [isRecording, setIsRecording]       = useState(false);
   const [activeGuideId, setActiveGuideId]   = useState(null);
+  const [redactingStep, setRedactingStep]   = useState(null);
+  
+  // ── Bulk Export State ──────────────────────────────────────────────────
+  const [bulkMode, setBulkMode]             = useState(false);
+  const [selectedIds, setSelectedIds]       = useState([]); // order is preserved here
+  const [isExportingBulk, setIsExportingBulk] = useState(false);
+  const [bulkTitle, setBulkTitle]           = useState('Bulk Export');
+  const [editingBulkTitle, setEditingBulkTitle] = useState(false);
+  const [bulkTitleInput, setBulkTitleInput] = useState('Bulk Export');
+
   const lastRequestedId = useRef(null);
 
   useEffect(() => {
@@ -425,6 +703,45 @@ export default function Dashboard() {
     });
   };
 
+  const handleSaveRedaction = async (step, blob) => {
+    try {
+      const db = await openDashboardDb();
+      const tx = db.transaction(['screenshots', 'guides'], 'readwrite');
+      
+      const ssStore = tx.objectStore('screenshots');
+      const oldSs = await new Promise(r => {
+        const req = ssStore.get(step.screenshotId);
+        req.onsuccess = (e) => r(e.target.result);
+      });
+      const sizeDiff = blob.size - (oldSs?.blob?.size || 0);
+
+      ssStore.put({ id: step.screenshotId, guideId: selectedGuide.id, blob });
+
+      const guideStore = tx.objectStore('guides');
+      const guide = await new Promise(r => {
+        const req = guideStore.get(selectedGuide.id);
+        req.onsuccess = (e) => r(e.target.result);
+      });
+      
+      if (guide) {
+        guide.storageBytes = (guide.storageBytes || 0) + sizeDiff;
+        guide.updatedAt = new Date().toISOString();
+        guideStore.put(guide);
+      }
+
+      tx.oncomplete = () => {
+        setRedactingStep(null);
+        const newSteps = selectedGuide.steps.map(s => 
+          s.id === step.id ? { ...s, _refresh: Date.now() } : s
+        );
+        setSelectedGuide({ ...selectedGuide, steps: newSteps });
+        loadStorageStats();
+      };
+    } catch (e) {
+      alert("Failed to save redacted image: " + e.message);
+    }
+  };
+
   const deleteStep = (step) => {
     if (window.confirm('Are you sure you want to delete this step?')) {
       chrome.runtime.sendMessage({ action: 'deleteStep', stepId: step.id }, (res) => {
@@ -450,39 +767,6 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
-  const getAnnotatedDataUrl = async (step, colorKey) => {
-    // BUG K: renamed outer variable from 'result' to 'screenshotResult' to
-    // prevent name collision with the inner 'result = canvas.toDataURL(...)'
-    const screenshotResult = await resolveScreenshotUrl(step);
-    if (!screenshotResult) return null;
-    const { url: srcUrl, revoke } = screenshotResult;
-    return new Promise((resolve) => {
-      const canvas = document.createElement('canvas');
-      const ctx    = canvas.getContext('2d');
-      const img    = new Image();
-      img.onload = () => {
-        canvas.width = img.width; canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
-        
-        const palette = HIGHLIGHT_COLORS[colorKey];
-        const ed = step.elementData;
-        if (palette && ed) {
-          const sx = img.width / ed.windowWidth, sy = img.height / ed.windowHeight;
-          const x  = ed.x * sx, y = ed.y * sy;
-          const w  = (ed.width || 120) * sx, h = (ed.height || 60) * sy;
-          ctx.strokeStyle = palette.stroke; ctx.lineWidth = 4;
-          ctx.strokeRect(x - w/2, y - h/2, w, h);
-          ctx.fillStyle = palette.fill;
-          ctx.fillRect(x - w/2, y - h/2, w, h);
-        }
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-        revoke();
-        resolve(dataUrl);
-      };
-      img.onerror = () => { revoke(); resolve(null); };
-      img.src = srcUrl;
-    });
-  };
 
   // BUG N: sanitize title before using as filename — remove chars illegal on Windows/macOS
   const sanitizeFilename = (title) =>
@@ -512,8 +796,13 @@ export default function Dashboard() {
         if (annotated) {
           doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
           y += 110;
-          if (y > 250) { doc.addPage(); y = 20; }
+        } else {
+          doc.setFontSize(10);
+          doc.setTextColor(150);
+          doc.text("[Image not available]", 10, y + 5);
+          y += 15;
         }
+        if (y > 250) { doc.addPage(); y = 20; }
       }
     }
     doc.save(`${sanitizeFilename(selectedGuide.title)}.pdf`); // BUG N
@@ -566,25 +855,338 @@ export default function Dashboard() {
   const exportJSON = async () => {
     if (!selectedGuide?.steps?.length) return;
     
-    // Create a deep copy of the guide to avoid mutating state
-    const exportData = JSON.parse(JSON.stringify(selectedGuide));
-    
-    // Process steps to include base64 screenshots
-    for (let i = 0; i < exportData.steps.length; i++) {
-      const step = exportData.steps[i];
-      if (step.screenshot || step.screenshotId) {
-        const stepColor = step.color || selectedGuide.defaultColor || 'red';
-        const annotated = await getAnnotatedDataUrl(selectedGuide.steps[i], stepColor);
-        if (annotated) {
-          step.screenshotDataUrl = annotated;
+    const standardizeStep = async (step, defaultColor) => ({
+      id: step.id || "",
+      guideId: step.guideId || "",
+      action: step.action || "",
+      description: step.description || "",
+      stepType: step.stepType || "click",
+      elementData: step.elementData || null,
+      color: step.color || null,
+      timestamp: step.timestamp || new Date().toISOString(),
+      screenshotId: step.screenshotId || null,
+      screenshotDataUrl: (step.screenshot || step.screenshotId) 
+        ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red') 
+        : null
+    });
+
+    const exportData = {
+      exportType: "steply_bundle",
+      version: "1.0",
+      exportTitle: selectedGuide.title || "Untitled",
+      exportedAt: new Date().toISOString(),
+      guides: [
+        {
+          id: selectedGuide.id || "",
+          title: selectedGuide.title || "Untitled",
+          url: selectedGuide.url || "",
+          createdAt: selectedGuide.createdAt || new Date().toISOString(),
+          updatedAt: selectedGuide.updatedAt || new Date().toISOString(),
+          stepCount: selectedGuide.stepCount || 0,
+          defaultColor: selectedGuide.defaultColor || "red",
+          steps: await Promise.all(selectedGuide.steps.map(s => standardizeStep(s, selectedGuide.defaultColor)))
         }
-      }
-    }
+      ]
+    };
 
     const jsonString = JSON.stringify(exportData, null, 2);
     downloadFile(
       new Blob([jsonString], { type: 'application/json' }), 
       `${sanitizeFilename(selectedGuide.title)}.json`
+    );
+  };
+
+  // ── Bulk Export Logic ──────────────────────────────────────────────────────
+  const toggleBulkMode = () => {
+    setBulkMode(!bulkMode);
+    setExportOpen(false); // Close dropdown when switching
+    if (!bulkMode) {
+      setBulkTitle('Bulk Export');
+      setBulkTitleInput('Bulk Export');
+    }
+    if (bulkMode) setSelectedIds([]); // clear on exit
+  };
+
+  const updateBulkTitle = () => {
+    const safeTitle = bulkTitleInput.trim() || 'Bulk Export';
+    setBulkTitle(safeTitle);
+    setBulkTitleInput(safeTitle);
+    setEditingBulkTitle(false);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === guides.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(guides.map(g => g.id));
+    }
+  };
+
+  const toggleSelectGuide = (id) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const moveBulkItem = (index, direction) => {
+    const newIds = [...selectedIds];
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= newIds.length) return;
+    const [moved] = newIds.splice(index, 1);
+    newIds.splice(targetIndex, 0, moved);
+    setSelectedIds(newIds);
+  };
+
+  const runBulkExport = async (format) => {
+    if (!selectedIds.length) return;
+    setIsExportingBulk(true);
+    
+    // Fetch all guides with full step data
+    const fullGuides = [];
+    for (const id of selectedIds) {
+      const res = await new Promise(r => chrome.runtime.sendMessage({ action: 'getGuide', guideId: id }, r));
+      if (res?.guide) fullGuides.push(res.guide);
+    }
+
+    if (format === 'json') {
+      const standardizeStep = async (step, defaultColor) => ({
+        id: step.id || "",
+        guideId: step.guideId || "",
+        action: step.action || "",
+        description: step.description || "",
+        stepType: step.stepType || "click",
+        elementData: step.elementData || null,
+        color: step.color || null,
+        timestamp: step.timestamp || new Date().toISOString(),
+        screenshotId: step.screenshotId || null,
+        screenshotDataUrl: (step.screenshot || step.screenshotId) 
+          ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red') 
+          : null
+      });
+
+      const exportData = {
+        exportType: "steply_bundle",
+        version: "1.0",
+        exportTitle: bulkTitle,
+        exportedAt: new Date().toISOString(),
+        guides: await Promise.all(fullGuides.map(async (g) => ({
+          id: g.id || "",
+          title: g.title || "Untitled",
+          url: g.url || "",
+          createdAt: g.createdAt || new Date().toISOString(),
+          updatedAt: g.updatedAt || new Date().toISOString(),
+          stepCount: g.stepCount || 0,
+          defaultColor: g.defaultColor || "red",
+          steps: await Promise.all(g.steps.map(s => standardizeStep(s, g.defaultColor)))
+        })))
+      };
+
+      downloadFile(new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' }), `${sanitizeFilename(bulkTitle)}.json`);
+    } 
+    else if (format === 'md') {
+      let md = `# ${bulkTitle}\n\n*Exported on ${new Date().toLocaleDateString()}*\n\n`;
+      for (const g of fullGuides) {
+        md += `## Guide: ${g.title}\n\n`;
+        for (let i = 0; i < g.steps.length; i++) {
+          const step = g.steps[i];
+          md += `### Step ${i + 1}: ${step.action}\n`;
+          if (step.description) md += `\n> ${step.description}\n`;
+          if (step.screenshot || step.screenshotId) {
+            const stepColor = step.color || g.defaultColor || 'red';
+            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor);
+            if (annotated) md += `\n![Screenshot](${annotated})\n`;
+          }
+          md += `\n`;
+        }
+        md += `\n---\n\n`;
+      }
+      downloadFile(new Blob([md], { type: 'text/markdown' }), `${sanitizeFilename(bulkTitle)}.md`);
+    }
+    else if (format === 'pdf') {
+      const doc = new jsPDF();
+      doc.setFontSize(22); doc.text(bulkTitle, 10, 20);
+      doc.setFontSize(10); doc.setTextColor(150); doc.text(`Exported on ${new Date().toLocaleDateString()}`, 10, 28);
+      
+      let isFirstGuide = true;
+      for (const g of fullGuides) {
+        doc.addPage();
+        doc.setFontSize(20); doc.setTextColor(0);
+        doc.text(g.title, 10, 20);
+        let y = 40;
+        for (let i = 0; i < g.steps.length; i++) {
+          const step = g.steps[i];
+          if (y > 250) { doc.addPage(); y = 20; }
+          doc.setFontSize(14); doc.text(`Step ${i + 1}: ${step.action}`, 10, y); y += 8;
+          if (step.description) {
+            doc.setFontSize(11); doc.setTextColor(100);
+            const lines = doc.splitTextToSize(step.description, 180);
+            doc.text(lines, 10, y); y += lines.length * 6 + 4;
+            doc.setTextColor(0);
+          }
+          y += 4;
+          if (step.screenshot || step.screenshotId) {
+            const stepColor = step.color || g.defaultColor || 'red';
+            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor);
+            if (annotated) {
+              doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
+              y += 110;
+              if (y > 250) { doc.addPage(); y = 20; }
+            }
+          }
+        }
+      }
+      doc.save(`${sanitizeFilename(bulkTitle)}.pdf`);
+    }
+    else if (format === 'word') {
+      const sections = [{
+        children: [
+          new Paragraph({ text: bulkTitle, heading: 'Title' }),
+          new Paragraph({ text: `Exported on ${new Date().toLocaleDateString()}` })
+        ]
+      }];
+      for (const g of fullGuides) {
+        const children = [new Paragraph({ text: g.title, heading: 'Heading1' })];
+        for (let i = 0; i < g.steps.length; i++) {
+          const step = g.steps[i];
+          children.push(new Paragraph({ text: `Step ${i + 1}: ${step.action}`, heading: 'Heading2' }));
+          if (step.description) children.push(new Paragraph({ text: step.description }));
+          if (step.screenshot || step.screenshotId) {
+            const stepColor = step.color || g.defaultColor || 'red';
+            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor);
+            if (annotated) {
+              const b64 = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+              const bin = window.atob(b64);
+              const bytes = new Uint8Array(bin.length);
+              for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+              children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 500, height: 300 } })] }));
+            }
+          }
+        }
+        sections.push({ children });
+      }
+      const blob = await Packer.toBlob(new Document({ sections }));
+      downloadFile(blob, `${sanitizeFilename(bulkTitle)}.docx`);
+    }
+
+    setIsExportingBulk(false);
+  };
+
+  const BulkExportView = () => {
+    const selectedGuides = selectedIds.map(id => guides.find(g => g.id === id)).filter(Boolean);
+    
+    return (
+      <div className="bulk-manager">
+        <div className="bulk-header">
+          <div className="bulk-title-group">
+            {editingBulkTitle ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <input 
+                  className="edit-input" 
+                  style={{ fontSize: '16px', fontWeight: 600, minWidth: '300px' }}
+                  value={bulkTitleInput} 
+                  onChange={e => setBulkTitleInput(e.target.value)} 
+                  autoFocus 
+                  onBlur={updateBulkTitle}
+                  onKeyDown={e => e.key === 'Enter' && updateBulkTitle()}
+                />
+              </div>
+            ) : (
+              <h2 
+                onClick={() => setEditingBulkTitle(true)} 
+                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                title="Click to rename"
+              >
+                {bulkTitle}
+                <i className="ti ti-edit" style={{ fontSize: '14px', color: 'var(--color-text-tertiary)' }}></i>
+              </h2>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' }}>
+              <p style={{ margin: 0 }}>{selectedIds.length} guides selected · Drag to reorder</p>
+              <button 
+                onClick={toggleSelectAll}
+                style={{ background: 'none', border: 'none', color: '#185FA5', fontSize: '11px', fontWeight: 600, cursor: 'pointer', padding: 0 }}
+              >
+                {selectedIds.length === guides.length ? 'Deselect All' : 'Select All'}
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn-secondary" onClick={toggleBulkMode}>Cancel</button>
+            <div className="export-dropdown-wrap">
+              <button 
+                className="btn-primary" 
+                onClick={() => setExportOpen(!exportOpen)}
+                disabled={isExportingBulk || !selectedIds.length}
+              >
+                <i className={isExportingBulk ? "ti ti-loader rotate" : "ti ti-download"}></i>
+                {isExportingBulk ? 'Exporting...' : 'Export Combined'}
+                <i className={`ti ti-chevron-${exportOpen ? 'up' : 'down'}`} style={{ fontSize: '12px' }}></i>
+              </button>
+              {exportOpen && (
+                <div className="export-dropdown-menu">
+                  <button className="export-dropdown-item" onClick={() => { runBulkExport('pdf'); setExportOpen(false); }}>
+                    <i className="ti ti-file-type-pdf"></i> Export as PDF
+                  </button>
+                  <button className="export-dropdown-item" onClick={() => { runBulkExport('word'); setExportOpen(false); }}>
+                    <i className="ti ti-file-type-doc"></i> Export as Word
+                  </button>
+                  <button className="export-dropdown-item" onClick={() => { runBulkExport('md'); setExportOpen(false); }}>
+                    <i className="ti ti-markdown"></i> Export as Markdown
+                  </button>
+                  <button className="export-dropdown-item" onClick={() => { runBulkExport('json'); setExportOpen(false); }}>
+                    <i className="ti ti-code"></i> Export as JSON
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="bulk-list">
+          {selectedGuides.length === 0 ? (
+            <div className="bulk-empty">
+              <i className="ti ti-checkbox"></i>
+              <h3>No guides selected</h3>
+              <p>Select guides from the sidebar on the left to include them in your bulk export.</p>
+            </div>
+          ) : (
+            selectedGuides.map((g, idx) => (
+              <div 
+                key={g.id} 
+                className="bulk-item"
+                draggable
+                onDragStart={(e) => e.dataTransfer.setData('index', idx)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  const fromIdx = parseInt(e.dataTransfer.getData('index'));
+                  const toIdx = idx;
+                  const newIds = [...selectedIds];
+                  const [moved] = newIds.splice(fromIdx, 1);
+                  newIds.splice(toIdx, 0, moved);
+                  setSelectedIds(newIds);
+                }}
+              >
+                <div className="bulk-item-drag-handle">
+                  <i className="ti ti-grip-vertical"></i>
+                </div>
+                <div className="bulk-item-content">
+                  <div className="bulk-item-title">{g.title || 'Untitled'}</div>
+                  <div className="bulk-item-meta">{g.stepCount} steps · {timeAgo(g.updatedAt)}</div>
+                </div>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                   <button className="bulk-item-remove" onClick={() => moveBulkItem(idx, -1)} disabled={idx === 0}>
+                    <i className="ti ti-chevron-up"></i>
+                  </button>
+                  <button className="bulk-item-remove" onClick={() => moveBulkItem(idx, 1)} disabled={idx === selectedIds.length - 1}>
+                    <i className="ti ti-chevron-down"></i>
+                  </button>
+                  <button className="bulk-item-remove" style={{ marginLeft: '8px' }} onClick={() => toggleSelectGuide(g.id)}>
+                    <i className="ti ti-x"></i>
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     );
   };
 
@@ -606,7 +1208,7 @@ export default function Dashboard() {
   const guideColor = selectedGuide?.defaultColor || 'red';
 
   return (
-    <div className="dash-root">
+    <div className="dash-root dash-fade-in">
       
       {/* ─── SIDEBAR ───────────────────────────────────────────────────────── */}
       <div className="sidebar">
@@ -633,7 +1235,13 @@ export default function Dashboard() {
         {/* Guides Count Header */}
         <div style={{ padding: '4px 16px 6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontSize: '10px', color: 'var(--color-text-tertiary)', letterSpacing: '0.5px', textTransform: 'uppercase' }}>Your guides</span>
-          <span style={{ fontSize: '10px', color: 'var(--color-text-tertiary)' }}>{guides.length} total</span>
+          <button 
+            className={`bulk-export-toggle ${bulkMode ? 'active' : ''}`}
+            onClick={toggleBulkMode}
+          >
+            <i className={bulkMode ? "ti ti-x" : "ti ti-stack-2"}></i>
+            {bulkMode ? 'Exit' : 'Bulk'}
+          </button>
         </div>
 
         {/* Guides List */}
@@ -648,10 +1256,24 @@ export default function Dashboard() {
               return (
                 <div 
                   key={g.id} 
-                  className={`guide-item ${isActive ? 'active' : ''}`} 
-                  onClick={() => loadGuideDetails(g.id)}
+                  className={`guide-item ${isActive && !bulkMode ? 'active' : ''}`} 
+                  onClick={() => bulkMode ? toggleSelectGuide(g.id) : loadGuideDetails(g.id)}
                 >
-                  <div className="gi-icon" style={{ background: isActive ? '#E6F1FB' : 'var(--color-background-secondary)', position: 'relative' }}>
+                  {bulkMode && (
+                    <div className="guide-checkbox-wrap">
+                      <input 
+                        type="checkbox" 
+                        className="guide-checkbox"
+                        checked={selectedIds.includes(g.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          toggleSelectGuide(g.id);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  )}
+                  <div className="gi-icon" style={{ background: (isActive && !bulkMode) ? '#E6F1FB' : 'var(--color-background-secondary)', position: 'relative' }}>
                     <i className="ti ti-file-description" style={{ fontSize: '14px', color: isActive ? '#185FA5' : 'var(--color-text-secondary)' }}></i>
                     {isRecording && activeGuideId === g.id && (
                       <span className="recording-pulse-mini" title="Recording in progress"></span>
@@ -683,7 +1305,9 @@ export default function Dashboard() {
 
       {/* ─── MAIN CONTENT ──────────────────────────────────────────────────── */}
       <div className="main">
-        {selectedGuide ? (
+        {bulkMode ? (
+          <BulkExportView />
+        ) : selectedGuide ? (
           <>
             {/* Main Header */}
             <div style={{ padding: '14px 20px 13px', background: 'var(--color-background-primary)', borderBottom: '1px solid var(--color-border-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 10 }}>
@@ -799,7 +1423,7 @@ export default function Dashboard() {
             <div style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {selectedGuide.steps?.map((step, index) => (
                 <StepCard 
-                  key={step.id} 
+                  key={`${step.id}-${step._refresh || ''}`} 
                   step={step} 
                   index={index} 
                   updateStepText={updateStepText} 
@@ -807,6 +1431,7 @@ export default function Dashboard() {
                   deleteStep={deleteStep}
                   updateStepColor={updateStepColor}
                   guideColor={guideColor}
+                  onRedact={setRedactingStep}
                 />
               ))}
 
@@ -837,6 +1462,15 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* ─── REDACTION OVERLAY (Root Level) ─────────────────────────────────── */}
+      {redactingStep && (
+        <RedactionWorkspace 
+          step={redactingStep} 
+          onCancel={() => setRedactingStep(null)}
+          onSave={handleSaveRedaction}
+        />
+      )}
     </div>
   );
 }

@@ -7,10 +7,12 @@ Stop wasting time taking manual screenshots and formatting documents. Simply cli
 ## 🚀 Key Features
 
 *   **Zero-Friction Capture:** Hit record and work naturally. Steply silently tracks your clicks and scrolls, capturing high-quality screenshots along the way.
-*   **The Trinity Toggle (Dynamic Spectrum Control):** Instantly switch the visual frequency of your screenshot annotations! Choose between **Flare (Red)** for high contrast, **Orbit (Green)** for steady visibility, or **None** for a pure, unobstructed view. Set a global default or override colors on a per-step basis!
-*   **Beautiful Dashboard:** Manage your guides in a sleek, dark-mode native dashboard. Edit action text, add custom notes, and reorder or delete steps with ease.
-*   **Seamless Exports:** Export your beautifully annotated guides to **PDF**, **Word (Docx)**, or **Markdown** with a single click.
-*   **100% Private & Local:** Steply is built with a privacy-first architecture. **No external servers.** **No telemetry.** All screenshots and guides are stored locally in your browser's IndexedDB. Your data never leaves your machine.
+*   **The Trinity Toggle:** Instantly switch visual frequency—choose **Flare (Red)**, **Orbit (Green)**, or **None**. Customize globally or per-step!
+*   **Redaction Workspace (New):** Protect sensitive data with a single click. Our Smart Blur algorithm ensures PII, passwords, and keys are irreversibly obscured before you export or share.
+*   **Ultimate Single-Click Copy (New):** Share faster than ever. Copy a step’s Title, Description, and Screenshot all at once. Paste into Slack, Gmail, or Teams—the entire step appears perfectly formatted with the image!
+*   **Professional Dashboard:** A sleek, high-performance UI to manage your library. Edit action text, add notes, and organize steps effortlessly.
+*   **Bulk Export Manager:** Combine multiple guides into one professional document—perfect for complex onboarding or full-system documentation.
+*   **Privacy-First:** Steply is 100% local. No servers, no telemetry. Your guides stay on your machine.
 
 ## 🛠 How it Works
 

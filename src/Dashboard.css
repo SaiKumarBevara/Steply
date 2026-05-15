@@ -13,6 +13,14 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
+.dash-fade-in {
+  animation: dashFadeIn 0.4s ease-out;
+}
+@keyframes dashFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 body {
   margin: 0;
   font-family: var(--font-sans);
@@ -495,6 +503,15 @@ body {
   100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
 }
 
+@keyframes rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.rotate { 
+  animation: rotate 1s linear infinite; 
+  will-change: transform;
+}
+
 .step-card-resume {
   border: 1.5px dashed var(--color-border-secondary);
   background: transparent;
@@ -524,4 +541,280 @@ body {
 
 .step-card-resume.recording:hover {
   background: #FEF2F2;
+}
+
+/* ── Bulk Export Styles ─────────────────────────────────────────────────── */
+.bulk-export-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 6px;
+  background: white;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.bulk-export-toggle:hover {
+  border-color: #185FA5;
+  color: #185FA5;
+}
+
+.bulk-export-toggle.active {
+  background: #185FA5;
+  color: white;
+  border-color: #185FA5;
+}
+
+.guide-checkbox-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-right: 4px;
+}
+
+.guide-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #185FA5;
+}
+
+.bulk-manager {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background-tertiary);
+  overflow: hidden;
+}
+
+.bulk-header {
+  padding: 16px 24px;
+  background: white;
+  border-bottom: 1px solid var(--color-border-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bulk-title-group h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.bulk-title-group p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.bulk-list {
+  padding: 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 800px;
+  width: 100%;
+  margin: 0 auto;
+  overflow-y: auto;
+}
+
+.bulk-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: white;
+  border: 1px solid var(--color-border-secondary);
+  padding: 14px 18px;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  cursor: grab;
+  transition: transform 0.1s, box-shadow 0.1s, opacity 0.2s;
+}
+
+.bulk-item:active {
+  cursor: grabbing;
+}
+
+.bulk-item.dragging {
+  opacity: 0.5;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+  transform: scale(1.02);
+}
+
+.bulk-item-drag-handle {
+  color: var(--color-text-tertiary);
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+}
+
+.bulk-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.bulk-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bulk-item-meta {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.bulk-item-remove {
+  color: var(--color-text-tertiary);
+  background: none;
+  border: none;
+  padding: 6px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.bulk-item-remove:hover {
+  background: #FEF2F2;
+  color: #EF4444;
+}
+
+.bulk-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 60px;
+  text-align: center;
+  color: var(--color-text-tertiary);
+}
+
+.bulk-empty i {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.3;
+}
+
+.bulk-empty h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: var(--color-text-secondary);
+}
+
+.bulk-empty p {
+  font-size: 14px;
+  max-width: 300px;
+}
+/* ── Redaction Tool (Premium) ───────────────────────────────────────────── */
+.redact-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-background-tertiary); /* Exact match with dashboard background */
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+}
+
+.redact-header {
+  padding: 16px 40px;
+  background: var(--color-background-primary); /* Match dashboard header/card color */
+  border-bottom: 1px solid var(--color-border-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+}
+
+.redact-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--color-text-primary);
+}
+
+.redact-info i {
+  font-size: 28px;
+  color: #185FA5;
+}
+
+.redact-info h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.redact-info p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--color-text-secondary); /* Better contrast in light mode */
+}
+
+.redact-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.redact-canvas-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  overflow: auto;
+  position: relative;
+  background: var(--color-background-tertiary); /* Consistency! */
+}
+
+.redact-canvas {
+  max-width: 100%;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.08); /* Lighter shadow for light theme */
+  cursor: crosshair;
+  background: white;
+}
+
+.redact-canvas.drawing {
+  cursor: crosshair;
+}
+
+.redact-guide-rect {
+  position: absolute;
+  border: 1.5px solid #185FA5; /* Match primary blue */
+  background: rgba(24, 95, 165, 0.08); /* Subtle highlight */
+  pointer-events: none;
+  z-index: 10;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 10000px rgba(255,255,255,0.4); /* Premium light-dim effect */
+}
+.redact-status {
+  color: var(--color-text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+}
+
+.redact-status.error {
+  color: #fca5a5;
+}
+
+.redact-status i {
+  font-size: 40px;
 }
