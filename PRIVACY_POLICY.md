@@ -8,7 +8,7 @@ Steply is built with a **Privacy-First** architecture.
 - **100% Local Storage:** Everything you record is stored exclusively on your device using IndexedDB.
 - **No Data Collection:** We do not collect your name, email, IP address, or any identifying information.
 - **No Tracking:** We use zero analytics, zero cookies, and zero third-party tracking scripts.
-- **No Cloud Dependency:** Steply has no backend servers. Your data never leaves your machine.
+- **No Cloud Dependency & No Remote Code:** Steply has no backend servers and relies on no remotely hosted code. Your data never leaves your machine.
 
 ---
 
@@ -24,7 +24,6 @@ Steply requests the following permissions to function. We only use these for the
 |---|---|
 | `activeTab` | To capture a screenshot of the current page when you explicitly record a step. |
 | `<all_urls>` | To allow the extension to function on any website you choose to document. |
-| `scripting` | To detect and highlight the elements you click on for accurate guide generation. |
 | `storage` / `unlimitedStorage` | To save your guides locally so they are available when you restart your browser. |
 
 ## 🔒 Redaction & Control

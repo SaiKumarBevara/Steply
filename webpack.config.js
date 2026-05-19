@@ -26,6 +26,11 @@ module.exports = {
         }
       },
       {
+        test: /\.js$/,
+        include: /node_modules[\\/]jspdf/,
+        use: [path.resolve(__dirname, 'remove-cdn-loader.js')]
+      },
+      {
         test: /\.css$/,
         use: ['style-loader', 'css-loader']
       }

@@ -485,45 +485,7 @@ async function handleMessage(message, sender, sendResponse) {
   }
 }
 
-/**
- * Recursively find the absolute offset of a frame relative to the top-level window.
- * This is a premium feature that handles nested iframes by traversing up the frame tree.
- */
-async function getFrameOffset(tabId, targetFrameId) {
-  let offsetX = 0;
-  let offsetY = 0;
-  let currentFrameId = targetFrameId;
 
-  while (currentFrameId > 0) {
-    try {
-      // Execute a script in the parent frame to find the dimensions of the child iframe
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true }, // We need to find which frame is the parent
-        func: (childId) => {
-          // This runs in ALL frames of the tab. We only care about the frame that IS the parent.
-          // In MV3, there's no direct "getParentFrameId", so we use a trick or check all iframes.
-          const iframes = Array.from(document.querySelectorAll('iframe'));
-          for (const iframe of iframes) {
-            // How do we know this iframe corresponds to childId?
-            // In a real production environment, we might use a unique ID or messaging.
-            // A common heuristic is to check the frame's internal ID if possible, 
-            // but since we can't easily, we'll use a messaging approach or assume 
-            // the content script has tagged the iframe.
-            // For now, we'll use a simpler robust approach: the content script in the subframe
-            // will have sent its own rect relative to its parent.
-          }
-          return null;
-        },
-        args: [currentFrameId]
-      });
-      // Actually, a better MV3 approach is to use the fact that chrome.webNavigation 
-      // can give us frame hierarchies, but we don't have that permission.
-      // Instead, we'll implement a robust content-script side offset calculation.
-      break; 
-    } catch (e) { break; }
-  }
-  return { x: offsetX, y: offsetY };
-}
 
 async function processNextStep() {
   if (isProcessing || stepQueue.length === 0) return;

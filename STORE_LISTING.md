@@ -12,7 +12,7 @@ Stop wasting time taking manual screenshots and formatting documents. Simply cli
 *   **Ultimate Single-Click Copy (New):** Share faster than ever. Copy a step’s Title, Description, and Screenshot all at once. Paste into Slack, Gmail, or Teams—the entire step appears perfectly formatted with the image!
 *   **Professional Dashboard:** A sleek, high-performance UI to manage your library. Edit action text, add notes, and organize steps effortlessly.
 *   **Bulk Export Manager:** Combine multiple guides into one professional document—perfect for complex onboarding or full-system documentation.
-*   **Privacy-First:** Steply is 100% local. No servers, no telemetry. Your guides stay on your machine.
+*   **Privacy & Security First:** Steply is 100% local with absolutely no remotely hosted code. No servers, no telemetry. Your guides stay on your machine.
 
 ## 🛠 How it Works
 

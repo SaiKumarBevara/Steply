@@ -5,7 +5,6 @@
   "description": "Auto-generate step-by-step guides by recording user interactions",
   "permissions": [
     "activeTab",
-    "scripting",
     "storage",
     "unlimitedStorage"
   ],
