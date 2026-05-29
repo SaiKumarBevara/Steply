@@ -12,6 +12,7 @@ let currentGuide = null;
 let isRecording   = false;
 let stepQueue     = [];
 let isProcessing  = false;
+let isInitializingGuide = false;
 let lastStepInfo  = { action: '', selector: '', timestamp: 0 };
 const DEDUPE_MS   = 800;  // Balanced for speed and noise reduction
 
@@ -87,7 +88,17 @@ async function checkQuota() {
 // ─── Image Compression (OffscreenCanvas — no UI thread blocking) ─────────────
 async function compressScreenshot(dataUrl, stepType = 'click') {
   try {
-    const inputBlob = await fetch(dataUrl).then(r => r.blob());
+    // Decode base64 data URL synchronously to prevent MV3 fetch CSP errors
+    const parts = dataUrl.split(',');
+    const mime = parts[0].match(/:(.*?);/)[1];
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    const inputBlob = new Blob([u8arr], { type: mime });
+
     const bitmap    = await createImageBitmap(inputBlob);
     let { width, height } = bitmap;
     if (width > MAX_IMG_WIDTH) {
@@ -103,6 +114,7 @@ async function compressScreenshot(dataUrl, stepType = 'click') {
     
     return await canvas.convertToBlob({ type: 'image/jpeg', quality });
   } catch (e) {
+    console.error("STEPLY compressScreenshot ERROR:", e);
     return null;
   }
 }
@@ -206,11 +218,15 @@ async function cleanupOldestGuide() {
 // ─── Broadcast to all tabs ───────────────────────────────────────────────────
 function broadcast(action) {
   const payload = typeof action === 'string' ? { action } : action;
-  // Send to all relevant tabs (skip restricted chrome:// or edge:// pages)
+  // Send to all open tabs without strict URL check to bypass missing "tabs" permission
   chrome.tabs.query({}, (tabs) => {
+    if (chrome.runtime.lastError || !tabs) return;
     tabs.forEach(t => {
-      if (t.url && (t.url.startsWith('http') || t.url.startsWith('chrome-extension'))) {
-        chrome.tabs.sendMessage(t.id, payload, () => chrome.runtime.lastError);
+      if (t.id) {
+        chrome.tabs.sendMessage(t.id, payload, () => {
+          // Suppress errors for tabs without content scripts
+          const err = chrome.runtime.lastError;
+        });
       }
     });
   });
@@ -269,21 +285,30 @@ async function handleMessage(message, sender, sendResponse) {
 
   // ── startRecording ─────────────────────────────────────────────────────────
   if (message.action === 'startRecording') {
-    const res = await new Promise(r => chrome.storage.local.get(['highlightColor'], r));
-    isRecording  = true;
-    currentGuide = {
-      id:        'guide_' + Date.now(),
-      title:     'Guide created ' + new Date().toLocaleString(),
-      url:       message.url || 'Multiple URLs',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      stepCount: 0,
-      defaultColor: res.highlightColor || 'red'
-    };
-    await saveGuide(currentGuide); // BUG 2: save to IDB first so recovery finds the guide
-    persistState();
-    broadcast('startRecording');
-    sendResponse({ status: 'started' });
+    isInitializingGuide = true;
+    try {
+      const res = await new Promise(r => chrome.storage.local.get(['highlightColor'], r));
+      isRecording  = true;
+      currentGuide = {
+        id:        'guide_' + Date.now(),
+        title:     'Guide created ' + new Date().toLocaleString(),
+        url:       message.url || 'Multiple URLs',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        stepCount: 0,
+        defaultColor: res.highlightColor || 'red'
+      };
+      await saveGuide(currentGuide);
+      persistState();
+      broadcast('startRecording');
+      sendResponse({ status: 'started' });
+    } catch (e) {
+      console.error("STEPLY startRecording ERROR:", e);
+      sendResponse({ error: e.toString() });
+    } finally {
+      isInitializingGuide = false;
+      processNextStep(); // flush any queued steps
+    }
     return;
   }
 
@@ -298,22 +323,33 @@ async function handleMessage(message, sender, sendResponse) {
   }
 
   // ── resumeRecording ────────────────────────────────────────────────────────
-  // BUG E: only set isRecording=true after confirming guide loaded successfully
   if (message.action === 'resumeRecording') {
-    const tx  = db.transaction(['guides'], 'readonly');
-    const req = tx.objectStore('guides').get(message.guideId);
-    req.onsuccess = (e) => {
-      if (!e.target.result) {
+    isInitializingGuide = true;
+    try {
+      const guide = await new Promise((resolve, reject) => {
+        const tx = db.transaction(['guides'], 'readonly');
+        const req = tx.objectStore('guides').get(message.guideId);
+        req.onsuccess = (e) => resolve(e.target.result);
+        req.onerror = (e) => reject(e.target.error || new Error('IDB read failed'));
+      });
+
+      if (!guide) {
         sendResponse({ error: 'Guide not found' });
         return;
       }
+
       isRecording  = true;
-      currentGuide = e.target.result;
+      currentGuide = guide;
       persistState();
       broadcast('startRecording');
       sendResponse({ success: true });
-    };
-    req.onerror = (e) => sendResponse({ error: e.target.error.toString() }); // isRecording stays false
+    } catch (e) {
+      console.error("STEPLY resumeRecording ERROR:", e);
+      sendResponse({ error: e.toString() });
+    } finally {
+      isInitializingGuide = false;
+      processNextStep(); // flush any queued steps
+    }
     return;
   }
 
@@ -341,6 +377,7 @@ async function handleMessage(message, sender, sendResponse) {
 
   // ── updateStep ─────────────────────────────────────────────────────────────
   if (message.action === 'updateStep') {
+    let hasResponded = false;
     const tx  = db.transaction(['steps'], 'readwrite');
     const req = tx.objectStore('steps').get(message.stepId);
     req.onsuccess = (e) => {
@@ -349,15 +386,19 @@ async function handleMessage(message, sender, sendResponse) {
         step.action    = message.actionText;
         step.updatedAt = new Date().toISOString();
         tx.objectStore('steps').put(step);
-      } else sendResponse({ error: 'Step not found' });
+      } else {
+        hasResponded = true;
+        sendResponse({ error: 'Step not found' });
+      }
     };
-    tx.oncomplete = () => sendResponse({ success: true });
-    tx.onerror = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); // BUG 3
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
     return;
   }
 
   // ── updateStepDescription ──────────────────────────────────────────────────
   if (message.action === 'updateStepDescription') {
+    let hasResponded = false;
     const tx  = db.transaction(['steps'], 'readwrite');
     const req = tx.objectStore('steps').get(message.stepId);
     req.onsuccess = (e) => {
@@ -366,15 +407,19 @@ async function handleMessage(message, sender, sendResponse) {
         step.description = message.description;
         step.updatedAt   = new Date().toISOString();
         tx.objectStore('steps').put(step);
-      } else sendResponse({ error: 'Step not found' });
+      } else {
+        hasResponded = true;
+        sendResponse({ error: 'Step not found' });
+      }
     };
-    tx.oncomplete = () => sendResponse({ success: true });
-    tx.onerror = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); // BUG 4
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
     return;
   }
 
   // ── updateGuideTitle ───────────────────────────────────────────────────────
   if (message.action === 'updateGuideTitle') {
+    let hasResponded = false;
     const tx  = db.transaction(['guides'], 'readwrite');
     const req = tx.objectStore('guides').get(message.guideId);
     req.onsuccess = (e) => {
@@ -383,10 +428,13 @@ async function handleMessage(message, sender, sendResponse) {
         guide.title     = message.title;
         guide.updatedAt = new Date().toISOString();
         tx.objectStore('guides').put(guide);
-      } else sendResponse({ error: 'Guide not found' });
+      } else {
+        hasResponded = true;
+        sendResponse({ error: 'Guide not found' });
+      }
     };
-    tx.oncomplete = () => sendResponse({ success: true });
-    tx.onerror = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); // BUG A
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
     return;
   }
 
@@ -400,6 +448,7 @@ async function handleMessage(message, sender, sendResponse) {
 
   // ── deleteStep ─────────────────────────────────────────────────────────────
   if (message.action === 'deleteStep') {
+    let hasResponded = false;
     const tx = db.transaction(['steps', 'screenshots', 'guides'], 'readwrite');
     const stepsStore = tx.objectStore('steps');
     const ssStore    = tx.objectStore('screenshots');
@@ -408,6 +457,7 @@ async function handleMessage(message, sender, sendResponse) {
     stepsStore.get(message.stepId).onsuccess = (e) => {
       const step = e.target.result;
       if (!step) {
+        hasResponded = true;
         sendResponse({ error: 'Step not found' });
         return;
       }
@@ -447,13 +497,14 @@ async function handleMessage(message, sender, sendResponse) {
       }
     };
 
-    tx.oncomplete = () => sendResponse({ success: true });
-    tx.onerror    = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' });
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror    = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
     return;
   }
 
   // ── updateGuideColor ───────────────────────────────────────────────────────
   if (message.action === 'updateGuideColor') {
+    let hasResponded = false;
     const tx  = db.transaction(['guides'], 'readwrite');
     const req = tx.objectStore('guides').get(message.guideId);
     req.onsuccess = (e) => {
@@ -461,15 +512,19 @@ async function handleMessage(message, sender, sendResponse) {
       if (guide) {
         guide.defaultColor = message.color;
         tx.objectStore('guides').put(guide);
-      } else sendResponse({ error: 'Guide not found' });
+      } else {
+        hasResponded = true;
+        sendResponse({ error: 'Guide not found' });
+      }
     };
-    tx.oncomplete = () => sendResponse({ success: true });
-    tx.onerror = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); // BUG B
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
     return;
   }
 
   // ── updateStepColor ────────────────────────────────────────────────────────
   if (message.action === 'updateStepColor') {
+    let hasResponded = false;
     const tx  = db.transaction(['steps'], 'readwrite');
     const req = tx.objectStore('steps').get(message.stepId);
     req.onsuccess = (e) => {
@@ -477,10 +532,13 @@ async function handleMessage(message, sender, sendResponse) {
       if (step) {
         step.color = message.color;
         tx.objectStore('steps').put(step);
-      } else sendResponse({ error: 'Step not found' });
+      } else {
+        hasResponded = true;
+        sendResponse({ error: 'Step not found' });
+      }
     };
-    tx.oncomplete = () => sendResponse({ success: true });
-    tx.onerror = (e) => sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); // BUG C
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
     return;
   }
 }
@@ -488,7 +546,7 @@ async function handleMessage(message, sender, sendResponse) {
 
 
 async function processNextStep() {
-  if (isProcessing || stepQueue.length === 0) return;
+  if (isProcessing || stepQueue.length === 0 || isInitializingGuide) return;
   isProcessing = true;
 
   const { step, sender, sendResponse } = stepQueue.shift();
@@ -498,9 +556,9 @@ async function processNextStep() {
     const quota = await checkQuota();
     if (quota.critical) {
       const cleaned = await cleanupOldestGuide();
-      if (!cleaned) { sendResponse({ error: 'storage_full', quota }); isProcessing = false; processNextStep(); return; }
+      if (!cleaned) { sendResponse({ error: 'storage_full', quota }); return; }
       const after = await checkQuota();
-      if (after.critical) { sendResponse({ error: 'storage_full', quota: after }); isProcessing = false; processNextStep(); return; }
+      if (after.critical) { sendResponse({ error: 'storage_full', quota: after }); return; }
     }
 
     // 2. Ensure active guide exists
@@ -522,8 +580,6 @@ async function processNextStep() {
     // 3. Max-steps guard
     if (currentGuide.stepCount >= MAX_STEPS) {
       sendResponse({ error: 'max_steps_reached', max: MAX_STEPS });
-      isProcessing = false;
-      processNextStep();
       return;
     }
 
@@ -560,12 +616,18 @@ async function processNextStep() {
 
     await Promise.all([saveStep(step), saveGuide(currentGuide)]);
     broadcast({ action: 'processStep', step, guideId: currentGuide.id });
-    sendResponse({ success: true, stepId: step.id });
+    
+    try {
+      sendResponse({ success: true, stepId: step.id });
+    } catch (_) {}
 
   } catch (e) {
-    sendResponse({ error: e.toString() });
+    console.error("STEPLY FATAL ERROR:", e, e.stack);
+    try {
+      sendResponse({ error: e.toString() });
+    } catch (_) {}
+  } finally {
+    isProcessing = false;
+    processNextStep();
   }
-
-  isProcessing = false;
-  processNextStep();
 }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Steply",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Auto-generate step-by-step guides by recording user interactions",
   "permissions": [
     "activeTab",

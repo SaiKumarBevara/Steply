@@ -1,9 +1,12 @@
+console.log("[Steply] Content script loaded successfully on:", window.location.href);
+
 let isRecording = false;
 
 // BUG 10: ensure isRecording stays in sync with storage across reloads/restarts
 function syncRecordingState() {
   chrome.storage.local.get(['isRecording'], (res) => {
     isRecording = !!res.isRecording;
+    console.log("[Steply] Recording state synced from storage:", isRecording);
   });
 }
 
@@ -11,7 +14,10 @@ syncRecordingState();
 
 // Listen for storage changes to handle Service Worker reloads/restarts
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes.isRecording) isRecording = changes.isRecording.newValue;
+  if (changes.isRecording) {
+    isRecording = changes.isRecording.newValue;
+    console.log("[Steply] Recording state changed in storage:", isRecording);
+  }
 });
 
 // Listen for messages from the background service worker
@@ -20,9 +26,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     isRecording = true;
     lastScrollY = window.scrollY;
     lastScrollX = window.scrollX;
+    console.log("[Steply] Received startRecording event.");
     sendResponse({ status: 'started' });
   } else if (request.action === 'stopRecording') {
     isRecording = false;
+    console.log("[Steply] Received stopRecording event.");
     sendResponse({ status: 'stopped' });
   }
 });
@@ -121,6 +129,7 @@ function generateActionDescription(el, typeOverride = null) {
 // Click listener on capture phase
 document.addEventListener('click', (event) => {
   if (!isRecording) return;
+  console.log("[Steply] Click event detected on:", event.target);
   
   // Use composedPath for Shadow DOM support
   const path = event.composedPath && event.composedPath();
@@ -130,23 +139,42 @@ document.addEventListener('click', (event) => {
 
   // Refine target: if the user clicked an icon or SVG inside a button/link,
   // we should target the interactive parent for a better CSS selector.
-  const interactiveTarget = path.find(el => 
+  const interactiveTarget = (path ? path.find(el => 
     el instanceof Element && 
     (el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT' || 
      el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || el.getAttribute('role') === 'button')
-  ) || target;
+  ) : null) || target;
 
   const selector = getCSSSelector(interactiveTarget);
   const description = generateActionDescription(interactiveTarget);
-  const rect = target.getBoundingClientRect();
+  const rect = interactiveTarget.getBoundingClientRect();
+  
+  // By default, highlight the interactive element
+  let x = rect.left + rect.width / 2;
+  let y = rect.top + rect.height / 2;
+  let w = rect.width;
+  let h = rect.height;
+
+  // If the element is too massive (like clicking the background <body> or a huge layout container),
+  // fallback to a fixed-size box centered exactly on the user's mouse click.
+  // Also enforce a minimum size so it's always visible for tiny buttons.
+  if (w > 400 || h > 400) {
+    x = event.clientX;
+    y = event.clientY;
+    w = 60;
+    h = 60;
+  } else {
+    w = Math.max(30, w);
+    h = Math.max(30, h);
+  }
   
   const elementData = {
     selector,
-    tagName,
-    x: rect.left + rect.width / 2, // center X
-    y: rect.top + rect.height / 2, // center Y
-    width: rect.width,
-    height: rect.height,
+    tagName: interactiveTarget.tagName.toLowerCase(),
+    x: x,
+    y: y,
+    width: w,
+    height: h,
     windowWidth: window.innerWidth,
     windowHeight: window.innerHeight,
     type: target.type || undefined,
@@ -156,9 +184,6 @@ document.addEventListener('click', (event) => {
   // Premium Iframe Support: Adjust coordinates if inside a frame
   if (window !== window.top) {
     try {
-      // Find this frame in the parent's document to get its offset
-      // This works for same-origin frames. For cross-origin, we'd need 
-      // the background script's help as implemented in background.js.
       const frame = window.frameElement;
       if (frame) {
         const frameRect = frame.getBoundingClientRect();
@@ -167,7 +192,6 @@ document.addEventListener('click', (event) => {
       }
     } catch (e) {
       // Cross-origin: the coordinates will be subframe-relative.
-      // background.js will handle global mapping if needed.
     }
   }
   
@@ -181,11 +205,18 @@ document.addEventListener('click', (event) => {
   
   // Send step immediately to background worker
   // This prevents losing the step if the page navigates away instantly (e.g. clicking a link)
-  chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
-    if (chrome.runtime.lastError) {
-      // step could not be sent (page might be navigating)
-    }
-  });
+  try {
+    console.log("[Steply] Sending click step details to background script:", selector);
+    chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn("[Steply] Failed to send step (likely due to immediate page navigation):", chrome.runtime.lastError.message);
+      } else {
+        console.log("[Steply] Step successfully saved in background!");
+      }
+    });
+  } catch (err) {
+    console.error("STEPLY FATAL ERROR: Failed to send step", err, step);
+  }
   
 }, true); // use capture phase
 
@@ -270,16 +301,20 @@ window.addEventListener('scroll', (event) => {
       stepType: 'scroll'
     };
 
-    chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
-      if (!chrome.runtime.lastError) {
-        if (isWindow) {
-          lastScrollY = capturedY;
-          lastScrollX = capturedX;
-        } else {
-          elementBaselines.set(target, { y: capturedY, x: capturedX });
+    try {
+      chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
+        if (!chrome.runtime.lastError) {
+          if (isWindow) {
+            lastScrollY = capturedY;
+            lastScrollX = capturedX;
+          } else {
+            elementBaselines.set(target, { y: capturedY, x: capturedX });
+          }
         }
-      }
-    });
+      });
+    } catch (err) {
+      console.error("STEPLY FATAL ERROR: Failed to send scroll step", err, step);
+    }
   }, SCROLL_DEBOUNCE_MS);
 
 }, true); // Use capture phase to catch scrolls on overflow elements

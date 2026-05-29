@@ -1,7 +1,7 @@
 # Privacy Policy for Steply
 
-**Effective Date:** May 15, 2026  
-**Last Updated:** May 15, 2026
+**Effective Date:** May 29, 2026  
+**Last Updated:** May 29, 2026
 
 ## 🛡️ Summary: Privacy by Design
 Steply is built with a **Privacy-First** architecture. 
