@@ -396,12 +396,8 @@ function createHUD() {
   });
 
   hudElement.querySelector('.btn-cancel').addEventListener('click', () => {
-    if (confirm('Cancel and delete this recording?')) {
-      chrome.runtime.sendMessage({ action: 'stopRecording' }, () => {
-        if (activeGuideId) {
-          chrome.runtime.sendMessage({ action: 'deleteGuide', guideId: activeGuideId });
-        }
-      });
+    if (confirm('Cancel and discard steps from this recording session?')) {
+      chrome.runtime.sendMessage({ action: 'cancelRecording' });
     }
   });
 

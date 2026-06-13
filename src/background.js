@@ -14,6 +14,8 @@ let isPaused      = false;
 let stepQueue     = [];
 let isProcessing  = false;
 let isInitializingGuide = false;
+let sessionStartStepCount = 0;
+let sessionStartTime = null;
 let lastStepInfo  = { action: '', selector: '', timestamp: 0 };
 const DEDUPE_MS   = 800;  // Balanced for speed and noise reduction
 
@@ -47,9 +49,11 @@ function openDB() {
 // which caused processStep to create a brand-new guide instead of resuming.
 let dbReady = openDB().then(() => {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['isRecording', 'activeGuideId', 'isPaused'], (res) => {
+    chrome.storage.local.get(['isRecording', 'activeGuideId', 'isPaused', 'sessionStartStepCount', 'sessionStartTime'], (res) => {
       if (res.isRecording) isRecording = true;
       if (res.isPaused) isPaused = true;
+      if (res.sessionStartStepCount !== undefined) sessionStartStepCount = res.sessionStartStepCount;
+      if (res.sessionStartTime !== undefined) sessionStartTime = res.sessionStartTime;
       if (res.activeGuideId) {
         const tx  = db.transaction(['guides'], 'readonly');
         const req = tx.objectStore('guides').get(res.activeGuideId);
@@ -68,7 +72,10 @@ let dbReady = openDB().then(() => {
 function persistState() {
   chrome.storage.local.set({
     isRecording,
-    activeGuideId: currentGuide ? currentGuide.id : null
+    activeGuideId: currentGuide ? currentGuide.id : null,
+    isPaused,
+    sessionStartStepCount,
+    sessionStartTime
   });
 }
 
@@ -310,6 +317,8 @@ async function handleMessage(message, sender, sendResponse) {
         timestampStyle: 'dark'
       };
       await saveGuide(currentGuide);
+      sessionStartStepCount = 0;
+      sessionStartTime = Date.now();
       persistState();
       broadcast('startRecording');
       sendResponse({ status: 'started' });
@@ -353,6 +362,8 @@ async function handleMessage(message, sender, sendResponse) {
 
       isRecording  = true;
       currentGuide = guide;
+      sessionStartStepCount = guide.stepCount;
+      sessionStartTime = Date.now();
       persistState();
       broadcast('startRecording');
       sendResponse({ success: true });
@@ -466,6 +477,84 @@ async function handleMessage(message, sender, sendResponse) {
     };
     tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
     tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
+    return;
+  }
+
+  // ── cancelRecording ────────────────────────────────────────────────────────
+  if (message.action === 'cancelRecording') {
+    isRecording = false;
+    isPaused = false;
+    chrome.storage.local.set({ isPaused: false });
+
+    if (!currentGuide) {
+      currentGuide = null;
+      persistState();
+      broadcast('stopRecording');
+      sendResponse({ success: true });
+      return;
+    }
+
+    const guideIdToDelete = currentGuide.id;
+
+    if (sessionStartStepCount === 0) {
+      // Brand new guide, delete entirely
+      deleteGuide(guideIdToDelete)
+        .then(() => {
+          currentGuide = null;
+          persistState();
+          broadcast('stopRecording');
+          sendResponse({ success: true });
+        })
+        .catch(e => {
+          currentGuide = null;
+          persistState();
+          broadcast('stopRecording');
+          sendResponse({ error: e.toString() });
+        });
+    } else {
+      // Existing resumed guide, revert to sessionStartStepCount
+      const startTimeCutoff = sessionStartTime;
+      
+      const tx = db.transaction(['steps', 'screenshots', 'guides'], 'readwrite');
+      const stepsStore = tx.objectStore('steps');
+      const ssStore = tx.objectStore('screenshots');
+      const guidesStore = tx.objectStore('guides');
+
+      // 1. Revert guide step count and update guide in IDB
+      currentGuide.stepCount = sessionStartStepCount;
+      currentGuide.updatedAt = new Date().toISOString();
+      guidesStore.put(currentGuide);
+
+      // 2. Open cursor on steps and delete steps + screenshots after cutoff
+      const stepsIdx = stepsStore.index('guideId');
+      stepsIdx.openCursor(IDBKeyRange.only(guideIdToDelete)).onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const step = cursor.value;
+          const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
+          if (stepTime >= startTimeCutoff) {
+            ssStore.delete('ss_' + step.id);
+            cursor.delete();
+          }
+          cursor.continue();
+        }
+      };
+
+      tx.oncomplete = () => {
+        currentGuide = null;
+        persistState();
+        broadcast('stopRecording');
+        sendResponse({ success: true, revertedTo: sessionStartStepCount });
+      };
+
+      tx.onerror = (err) => {
+        console.error("Cancel recording transaction error:", err);
+        currentGuide = null;
+        persistState();
+        broadcast('stopRecording');
+        sendResponse({ error: 'Failed to revert session steps' });
+      };
+    }
     return;
   }
 
