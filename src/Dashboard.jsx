@@ -72,9 +72,7 @@ const HIGHLIGHT_COLORS = {
   none:  null,
 };
 
-// Renders screenshot to dataURL with annotations.
-// BUG K: renamed result to screenshotResult to avoid collision with canvas result.
-async function getAnnotatedDataUrl(step, colorKey) {
+async function getAnnotatedDataUrl(step, colorKey, showTimestamp) {
   const screenshotResult = await resolveScreenshotUrl(step);
   if (!screenshotResult) return null;
   const { url: srcUrl, revoke } = screenshotResult;
@@ -96,6 +94,19 @@ async function getAnnotatedDataUrl(step, colorKey) {
         ctx.fillStyle = palette.fill;
         ctx.fillRect(x - w/2, y - h/2, w, h);
       }
+      
+      if (showTimestamp && step.timestamp) {
+        const dateText = new Date(step.timestamp).toLocaleString();
+        ctx.font = 'bold 20px "DM Sans", sans-serif';
+        const textWidth = ctx.measureText(dateText).width;
+        ctx.fillStyle = 'rgba(17, 24, 39, 0.75)';
+        ctx.fillRect(canvas.width - textWidth - 30, canvas.height - 46, textWidth + 20, 36);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(dateText, canvas.width - textWidth - 20, canvas.height - 28);
+      }
+
       // Use PNG for clipboard support (JPEG is often rejected by browsers for ClipboardItem)
       const dataUrl = canvas.toDataURL('image/png');
       revoke();
@@ -106,7 +117,7 @@ async function getAnnotatedDataUrl(step, colorKey) {
   });
 }
 
-function ScreenshotCanvas({ step, highlightColor = 'red' }) {
+function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = false }) {
   const canvasRef = useRef(null);
   // imgRef keeps the decoded image so we can redraw without re-fetching
   const imgRef = useRef(null);
@@ -126,7 +137,7 @@ function ScreenshotCanvas({ step, highlightColor = 'red' }) {
       img.onload = () => {
         if (cancelled) return;
         imgRef.current = img;
-        drawCanvas(img, highlightColor);
+        drawCanvas(img, highlightColor, showTimestamp);
       };
       // BUG J: handle broken/missing blob URLs — clear canvas and show error text
       img.onerror = () => {
@@ -150,12 +161,12 @@ function ScreenshotCanvas({ step, highlightColor = 'red' }) {
     return () => { cancelled = true; if (revokeFn) revokeFn(); }; // BUG 12: always revoke
   }, [step?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Redraw when color changes (no re-fetch needed)
+  // Redraw when color or timestamp visibility changes (no re-fetch needed)
   useEffect(() => {
-    if (imgRef.current) drawCanvas(imgRef.current, highlightColor);
-  }, [highlightColor]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (imgRef.current) drawCanvas(imgRef.current, highlightColor, showTimestamp);
+  }, [highlightColor, showTimestamp]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function drawCanvas(img, color) {
+  function drawCanvas(img, color, showTime) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -175,6 +186,18 @@ function ScreenshotCanvas({ step, highlightColor = 'red' }) {
       ctx.strokeRect(x - w/2, y - h/2, w, h);
       ctx.fillStyle = palette.fill;
       ctx.fillRect(x - w/2, y - h/2, w, h);
+    }
+
+    if (showTime && step.timestamp) {
+      const dateText = new Date(step.timestamp).toLocaleString();
+      ctx.font = 'bold 20px "DM Sans", sans-serif';
+      const textWidth = ctx.measureText(dateText).width;
+      ctx.fillStyle = 'rgba(17, 24, 39, 0.75)';
+      ctx.fillRect(canvas.width - textWidth - 30, canvas.height - 46, textWidth + 20, 36);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dateText, canvas.width - textWidth - 20, canvas.height - 28);
     }
   }
 
@@ -356,7 +379,7 @@ function RedactionWorkspace({ step, onSave, onCancel }) {
   );
 }
 
-const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteStep, updateStepColor, guideColor, onRedact }) => {
+const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteStep, updateStepColor, guideColor, showTimestamp, onRedact }) => {
   const [desc, setDesc] = useState(step.description || '');
   const [action, setAction] = useState(step.action || '');
   const [isEditingAction, setIsEditingAction] = useState(false);
@@ -452,7 +475,7 @@ const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteSt
                 try {
                   icon.className = 'ti ti-loader rotate';
                   const activeColor = step.color || guideColor || 'red';
-                  const dataUrl = await getAnnotatedDataUrl(step, activeColor);
+                  const dataUrl = await getAnnotatedDataUrl(step, activeColor, showTimestamp);
                   
                   const plainText = `${step.action}${step.description ? '\n' + step.description : ''}`;
                   const clipboardData = {
@@ -517,7 +540,7 @@ const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteSt
 
       <div className={`screenshot-area ${(step.screenshot || step.screenshotId) ? '' : 'empty'}`}>
         {(step.screenshot || step.screenshotId) ? (
-          <ScreenshotCanvas step={step} highlightColor={activeColor} />
+          <ScreenshotCanvas step={step} highlightColor={activeColor} showTimestamp={showTimestamp} />
         ) : (
           <>
             <div className="highlight-box">
@@ -561,7 +584,9 @@ export default function Dashboard() {
     const urlParams = new URLSearchParams(window.location.search);
     const guideId = urlParams.get('guideId');
     if (guideId) loadGuideDetails(guideId);
+  }, []); // Run ONLY once on mount
 
+  useEffect(() => {
     // Listen for real-time updates from the background
     const messageListener = (msg) => {
       if (msg.action === 'startRecording') {
@@ -623,6 +648,13 @@ export default function Dashboard() {
         setSelectedGuide(res.guide);
         setTitleText(res.guide.title || 'Untitled');
         setEditingTitle(false);
+        
+        try {
+          const newUrl = `${window.location.origin}${window.location.pathname}?guideId=${id}`;
+          window.history.pushState({ path: newUrl }, '', newUrl);
+        } catch (e) {
+          console.warn('[Steply] Failed to update URL query parameter:', e);
+        }
       }
     });
   };
@@ -653,6 +685,13 @@ export default function Dashboard() {
         setSelectedGuide(null);
         loadGuides();
         loadStorageStats();
+
+        try {
+          const newUrl = `${window.location.origin}${window.location.pathname}`;
+          window.history.pushState({ path: newUrl }, '', newUrl);
+        } catch (e) {
+          console.warn('[Steply] Failed to update URL query parameter:', e);
+        }
       });
     }
   };
@@ -792,7 +831,7 @@ export default function Dashboard() {
       y += 4;
       if (step.screenshot || step.screenshotId) {
         const stepColor = step.color || selectedGuide.defaultColor || 'red';
-        const annotated = await getAnnotatedDataUrl(step, stepColor);
+        const annotated = await getAnnotatedDataUrl(step, stepColor, selectedGuide.showTimestamp);
         if (annotated) {
           doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
           y += 110;
@@ -817,7 +856,7 @@ export default function Dashboard() {
       if (step.description) md += `\n> ${step.description}\n`;
       if (step.screenshot || step.screenshotId) {
         const stepColor = step.color || selectedGuide.defaultColor || 'red';
-        const annotated = await getAnnotatedDataUrl(step, stepColor);
+        const annotated = await getAnnotatedDataUrl(step, stepColor, selectedGuide.showTimestamp);
         if (annotated) md += `\n![Screenshot](${annotated})\n`;
       }
       md += `\n`;
@@ -837,7 +876,7 @@ export default function Dashboard() {
       if (step.screenshot || step.screenshotId) {
         try {
           const stepColor = step.color || selectedGuide.defaultColor || 'red';
-          const annotated = await getAnnotatedDataUrl(step, stepColor);
+          const annotated = await getAnnotatedDataUrl(step, stepColor, selectedGuide.showTimestamp);
           if (annotated) {
             const b64  = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
             const bin  = window.atob(b64);
@@ -855,7 +894,7 @@ export default function Dashboard() {
   const exportJSON = async () => {
     if (!selectedGuide?.steps?.length) return;
     
-    const standardizeStep = async (step, defaultColor) => ({
+    const standardizeStep = async (step, defaultColor, showTimestamp) => ({
       id: step.id || "",
       guideId: step.guideId || "",
       action: step.action || "",
@@ -866,7 +905,7 @@ export default function Dashboard() {
       timestamp: step.timestamp || new Date().toISOString(),
       screenshotId: step.screenshotId || null,
       screenshotDataUrl: (step.screenshot || step.screenshotId) 
-        ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red') 
+        ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red', showTimestamp) 
         : null
     });
 
@@ -884,7 +923,7 @@ export default function Dashboard() {
           updatedAt: selectedGuide.updatedAt || new Date().toISOString(),
           stepCount: selectedGuide.stepCount || 0,
           defaultColor: selectedGuide.defaultColor || "red",
-          steps: await Promise.all(selectedGuide.steps.map(s => standardizeStep(s, selectedGuide.defaultColor)))
+          steps: await Promise.all(selectedGuide.steps.map(s => standardizeStep(s, selectedGuide.defaultColor, selectedGuide.showTimestamp)))
         }
       ]
     };
@@ -947,7 +986,7 @@ export default function Dashboard() {
     }
 
     if (format === 'json') {
-      const standardizeStep = async (step, defaultColor) => ({
+      const standardizeStep = async (step, defaultColor, showTimestamp) => ({
         id: step.id || "",
         guideId: step.guideId || "",
         action: step.action || "",
@@ -958,7 +997,7 @@ export default function Dashboard() {
         timestamp: step.timestamp || new Date().toISOString(),
         screenshotId: step.screenshotId || null,
         screenshotDataUrl: (step.screenshot || step.screenshotId) 
-          ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red') 
+          ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red', showTimestamp) 
           : null
       });
 
@@ -975,7 +1014,7 @@ export default function Dashboard() {
           updatedAt: g.updatedAt || new Date().toISOString(),
           stepCount: g.stepCount || 0,
           defaultColor: g.defaultColor || "red",
-          steps: await Promise.all(g.steps.map(s => standardizeStep(s, g.defaultColor)))
+          steps: await Promise.all(g.steps.map(s => standardizeStep(s, g.defaultColor, g.showTimestamp)))
         })))
       };
 
@@ -991,7 +1030,7 @@ export default function Dashboard() {
           if (step.description) md += `\n> ${step.description}\n`;
           if (step.screenshot || step.screenshotId) {
             const stepColor = step.color || g.defaultColor || 'red';
-            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor);
+            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor, g.showTimestamp);
             if (annotated) md += `\n![Screenshot](${annotated})\n`;
           }
           md += `\n`;
@@ -1024,7 +1063,7 @@ export default function Dashboard() {
           y += 4;
           if (step.screenshot || step.screenshotId) {
             const stepColor = step.color || g.defaultColor || 'red';
-            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor);
+            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor, g.showTimestamp);
             if (annotated) {
               doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
               y += 110;
@@ -1050,7 +1089,7 @@ export default function Dashboard() {
           if (step.description) children.push(new Paragraph({ text: step.description }));
           if (step.screenshot || step.screenshotId) {
             const stepColor = step.color || g.defaultColor || 'red';
-            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor);
+            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor, g.showTimestamp);
             if (annotated) {
               const b64 = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
               const bin = window.atob(b64);
@@ -1201,6 +1240,17 @@ export default function Dashboard() {
         return;
       }
       setSelectedGuide({ ...selectedGuide, defaultColor: color });
+      loadGuides();
+    });
+  };
+
+  const updateGuideTimestamp = (showTimestamp) => {
+    chrome.runtime.sendMessage({ action: 'updateGuideTimestamp', guideId: selectedGuide.id, showTimestamp }, (res) => {
+      if (res?.error) {
+        alert(`Failed to update guide timestamp visibility: ${res.error}`);
+        return;
+      }
+      setSelectedGuide({ ...selectedGuide, showTimestamp });
       loadGuides();
     });
   };
@@ -1404,6 +1454,26 @@ export default function Dashboard() {
                     </button>
                   </div>
 
+                  {/* ── Timestamp Toggle (Guide Level) ── */}
+                  <div className="trinity-toggle" title="Show timestamps on screenshots">
+                    <button
+                      className={`trinity-btn ${selectedGuide?.showTimestamp ? 'active-none' : ''}`}
+                      onClick={() => updateGuideTimestamp(true)}
+                      title="Show timestamps"
+                    >
+                      <i className="ti ti-clock" style={{ fontSize: '12px', color: selectedGuide?.showTimestamp ? '#185FA5' : 'inherit' }} />
+                      Time: Yes
+                    </button>
+                    <button
+                      className={`trinity-btn ${!selectedGuide?.showTimestamp ? 'active-none' : ''}`}
+                      onClick={() => updateGuideTimestamp(false)}
+                      title="Hide timestamps"
+                    >
+                      <i className="ti ti-clock-off" style={{ fontSize: '12px' }} />
+                      Time: No
+                    </button>
+                  </div>
+
                   <button 
                     className={isRecording && activeGuideId === selectedGuide.id ? "btn-recording-active" : "btn-primary"} 
                     onClick={handleResumeRecording}
@@ -1431,6 +1501,7 @@ export default function Dashboard() {
                   deleteStep={deleteStep}
                   updateStepColor={updateStepColor}
                   guideColor={guideColor}
+                  showTimestamp={selectedGuide?.showTimestamp}
                   onRedact={setRedactingStep}
                 />
               ))}

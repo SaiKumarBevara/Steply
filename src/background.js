@@ -296,7 +296,8 @@ async function handleMessage(message, sender, sendResponse) {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         stepCount: 0,
-        defaultColor: res.highlightColor || 'red'
+        defaultColor: res.highlightColor || 'red',
+        showTimestamp: false
       };
       await saveGuide(currentGuide);
       persistState();
@@ -522,6 +523,26 @@ async function handleMessage(message, sender, sendResponse) {
     return;
   }
 
+  // ── updateGuideTimestamp ───────────────────────────────────────────────────
+  if (message.action === 'updateGuideTimestamp') {
+    let hasResponded = false;
+    const tx  = db.transaction(['guides'], 'readwrite');
+    const req = tx.objectStore('guides').get(message.guideId);
+    req.onsuccess = (e) => {
+      const guide = e.target.result;
+      if (guide) {
+        guide.showTimestamp = message.showTimestamp;
+        tx.objectStore('guides').put(guide);
+      } else {
+        hasResponded = true;
+        sendResponse({ error: 'Guide not found' });
+      }
+    };
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
+    return;
+  }
+
   // ── updateStepColor ────────────────────────────────────────────────────────
   if (message.action === 'updateStepColor') {
     let hasResponded = false;
@@ -571,16 +592,11 @@ async function processNextStep() {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         stepCount: 0,
-        defaultColor: res.highlightColor || 'red'
+        defaultColor: res.highlightColor || 'red',
+        showTimestamp: false
       };
       await saveGuide(currentGuide);
       persistState();
-    }
-
-    // 3. Max-steps guard
-    if (currentGuide.stepCount >= MAX_STEPS) {
-      sendResponse({ error: 'max_steps_reached', max: MAX_STEPS });
-      return;
     }
 
     step.id          = Date.now() + '-' + Math.random().toString(36).slice(2, 9);
