@@ -281,6 +281,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'recordingResumed') {
     isPaused = false;
     updateHUD();
+  } else if (request.action === 'hideHUD') {
+    if (hudElement) {
+      hudElement.style.setProperty('display', 'none', 'important');
+    }
+    const toast = document.getElementById('steply-toast-element');
+    if (toast) {
+      toast.style.setProperty('display', 'none', 'important');
+    }
+    sendResponse({ status: 'hidden' });
+  } else if (request.action === 'showHUD') {
+    if (hudElement && !isHudClosedSession) {
+      hudElement.style.removeProperty('display');
+    }
+    const toast = document.getElementById('steply-toast-element');
+    if (toast) {
+      toast.style.removeProperty('display');
+    }
+    sendResponse({ status: 'shown' });
   }
 });
 

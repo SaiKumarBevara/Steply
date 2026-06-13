@@ -641,6 +641,17 @@ async function processNextStep() {
     // 4. Capture → compress → store
     const windowId = sender.tab ? sender.tab.windowId : null;
     
+    if (sender.tab && sender.tab.id) {
+      try {
+        await new Promise((res) => {
+          chrome.tabs.sendMessage(sender.tab.id, { action: 'hideHUD' }, () => {
+            if (chrome.runtime.lastError) {}
+            res();
+          });
+        });
+      } catch (err) {}
+    }
+
     // MICRO-FIX: Wait 150ms for UI transitions (like button ripples or hover effects) 
     // to settle before capturing. This produces cleaner screenshots.
     await new Promise(r => setTimeout(r, 150));
@@ -653,6 +664,14 @@ async function processNextStep() {
       }),
       new Promise(res => setTimeout(() => res(null), 3000))
     ]);
+
+    if (sender.tab && sender.tab.id) {
+      try {
+        chrome.tabs.sendMessage(sender.tab.id, { action: 'showHUD' }, () => {
+          if (chrome.runtime.lastError) {}
+        });
+      } catch (err) {}
+    }
 
     if (dataUrl) {
       const blob = await compressScreenshot(dataUrl, step.stepType);
