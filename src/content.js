@@ -1,6 +1,7 @@
 console.log("[Steply] Content script loaded successfully on:", window.location.href);
 
 let isRecording = false;
+let isPaused = false;
 let activeGuideId = null;
 let currentStepCount = 0;
 let hudElement = null;
@@ -17,90 +18,159 @@ hudStyle.textContent = `
     100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
   }
   .steply-hud {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    z-index: 2147483647;
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
-    border-radius: 99px;
-    padding: 8px 14px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 13px;
-    color: #1f2937;
-    user-select: none;
-    transition: opacity 0.2s ease;
+    all: initial !important;
+    position: fixed !important;
+    bottom: 20px !important;
+    right: 20px !important;
+    z-index: 2147483647 !important;
+    background: #ffffff !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 99px !important;
+    padding: 8px 14px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-size: 13px !important;
+    color: #1f2937 !important;
+    user-select: none !important;
+    transition: opacity 0.2s ease !important;
+    box-sizing: border-box !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
   }
   .steply-hud-drag-handle {
-    display: flex;
-    align-items: center;
-    cursor: grab;
-    padding: 2px;
+    all: initial !important;
+    display: flex !important;
+    align-items: center !important;
+    cursor: grab !important;
+    padding: 2px !important;
+    box-sizing: border-box !important;
+    width: auto !important;
+    height: auto !important;
+    margin: 0 !important;
+  }
+  .steply-hud-drag-handle svg {
+    all: initial !important;
+    width: 12px !important;
+    height: 18px !important;
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
   .steply-hud-pulse {
-    width: 8px;
-    height: 8px;
-    background: #ef4444;
-    border-radius: 50%;
-    animation: steply-pulse 1.5s infinite;
-    flex-shrink: 0;
+    all: initial !important;
+    display: block !important;
+    width: 8px !important;
+    height: 8px !important;
+    background: #ef4444 !important;
+    border-radius: 50% !important;
+    animation: steply-pulse 1.5s infinite !important;
+    flex-shrink: 0 !important;
+    box-sizing: border-box !important;
+    margin: 0 !important;
   }
   .steply-hud-text {
-    font-weight: 500;
-    white-space: nowrap;
+    all: initial !important;
+    display: inline-block !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-size: 13px !important;
+    color: #1f2937 !important;
+    font-weight: 500 !important;
+    white-space: nowrap !important;
+    user-select: none !important;
+    box-sizing: border-box !important;
+    width: auto !important;
+    height: auto !important;
+    margin: 0 !important;
   }
   .steply-hud-divider {
-    width: 1px;
-    height: 16px;
-    background: #e5e7eb;
+    all: initial !important;
+    display: block !important;
+    width: 1px !important;
+    height: 16px !important;
+    background: #e5e7eb !important;
+    box-sizing: border-box !important;
+    margin: 0 !important;
   }
   .steply-hud-btn {
-    border: none;
-    background: none;
-    cursor: pointer;
-    padding: 5px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.15s, color 0.15s;
-    color: #6b7280;
+    all: initial !important;
+    border: none !important;
+    background: none !important;
+    cursor: pointer !important;
+    padding: 5px !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: background 0.15s, color 0.15s !important;
+    color: #6b7280 !important;
+    width: 24px !important;
+    height: 24px !important;
+    box-sizing: border-box !important;
+    margin: 0 !important;
+  }
+  .steply-hud-btn svg {
+    all: initial !important;
+    width: 12px !important;
+    height: 12px !important;
+    display: block !important;
+    fill: currentColor !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .steply-hud-btn.btn-cancel svg {
+    width: 13px !important;
+    height: 13px !important;
+    fill: none !important;
+    stroke: currentColor !important;
   }
   .steply-hud-btn:hover {
-    background: #f3f4f6;
-    color: #111827;
+    background: #f3f4f6 !important;
+    color: #111827 !important;
   }
   .steply-hud-btn.btn-stop:hover {
-    background: #fef2f2;
-    color: #ef4444;
+    background: #fef2f2 !important;
+    color: #ef4444 !important;
   }
   .steply-hud-btn.btn-cancel:hover {
-    background: #fef2f2;
-    color: #dc2626;
+    background: #fef2f2 !important;
+    color: #dc2626 !important;
   }
   .steply-toast {
-    position: fixed;
-    z-index: 2147483647;
-    background: #10b981;
-    color: #ffffff;
-    padding: 10px 16px;
-    border-radius: 8px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 12px;
-    font-weight: 500;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    transform: translateY(10px);
-    opacity: 0;
-    transition: all 0.2s ease-out;
-    pointer-events: none;
+    all: initial !important;
+    position: fixed !important;
+    z-index: 2147483647 !important;
+    background: #10b981 !important;
+    color: #ffffff !important;
+    padding: 10px 16px !important;
+    border-radius: 8px !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+    transform: translateY(10px) !important;
+    opacity: 0 !important;
+    transition: all 0.2s ease-out !important;
+    pointer-events: none !important;
+    box-sizing: border-box !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
   }
   .steply-toast.show {
-    transform: translateY(0);
-    opacity: 1;
+    transform: translateY(0) !important;
+    opacity: 1 !important;
   }
 `;
 if (document.head) {
@@ -127,6 +197,7 @@ function syncRecordingState() {
   chrome.runtime.sendMessage({ action: 'getRecordingStatus' }, (res) => {
     if (res) {
       isRecording = !!res.isRecording;
+      isPaused = !!res.isPaused;
       activeGuideId = res.guideId;
       currentStepCount = res.stepCount || 0;
       updateHUD();
@@ -138,10 +209,15 @@ syncRecordingState();
 
 // Listen for storage changes to handle Service Worker reloads/restarts
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes.isRecording) {
-    isRecording = changes.isRecording.newValue;
-    if (!isRecording) {
-      isHudClosedSession = false;
+  if (changes.isRecording || changes.isPaused) {
+    if (changes.isRecording) {
+      isRecording = changes.isRecording.newValue;
+      if (!isRecording) {
+        isHudClosedSession = false;
+      }
+    }
+    if (changes.isPaused) {
+      isPaused = changes.isPaused.newValue;
     }
     syncRecordingState();
   }
@@ -151,6 +227,7 @@ chrome.storage.onChanged.addListener((changes) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startRecording') {
     isRecording = true;
+    isPaused = false;
     isHudClosedSession = false;
     lastScrollY = window.scrollY;
     lastScrollX = window.scrollX;
@@ -158,9 +235,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ status: 'started' });
   } else if (request.action === 'stopRecording') {
     isRecording = false;
+    isPaused = false;
     isHudClosedSession = false;
     updateHUD();
     sendResponse({ status: 'stopped' });
+  } else if (request.action === 'recordingPaused') {
+    isPaused = true;
+    updateHUD();
+  } else if (request.action === 'recordingResumed') {
+    isPaused = false;
+    updateHUD();
   }
 });
 
@@ -171,7 +255,28 @@ function updateHUD() {
     }
     const textNode = hudElement.querySelector('.steply-hud-text');
     if (textNode) {
-      textNode.textContent = `Recording... (${currentStepCount} step${currentStepCount === 1 ? '' : 's'})`;
+      const statusText = isPaused ? 'Paused' : 'Recording';
+      textNode.textContent = `${statusText}... (${currentStepCount} step${currentStepCount === 1 ? '' : 's'})`;
+    }
+    const pulseDot = hudElement.querySelector('.steply-hud-pulse');
+    if (pulseDot) {
+      if (isPaused) {
+        pulseDot.style.background = '#9ca3af';
+        pulseDot.style.animation = 'none';
+      } else {
+        pulseDot.style.background = '#ef4444';
+        pulseDot.style.animation = 'steply-pulse 1.5s infinite';
+      }
+    }
+    const pauseBtn = hudElement.querySelector('.btn-pause');
+    if (pauseBtn) {
+      if (isPaused) {
+        pauseBtn.title = 'Resume Recording';
+        pauseBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+      } else {
+        pauseBtn.title = 'Pause Recording';
+        pauseBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+      }
     }
   } else {
     if (hudElement) {
@@ -191,6 +296,9 @@ function createHUD() {
     <div class="steply-hud-pulse"></div>
     <span class="steply-hud-text">Recording... (0 steps)</span>
     <div class="steply-hud-divider"></div>
+    <button class="steply-hud-btn btn-pause" title="Pause Recording">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+    </button>
     <button class="steply-hud-btn btn-stop" title="Stop & Save Recording">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
     </button>
@@ -214,6 +322,14 @@ function createHUD() {
   }
 
   // Button actions
+  hudElement.querySelector('.btn-pause').addEventListener('click', () => {
+    if (isPaused) {
+      chrome.runtime.sendMessage({ action: 'resumeRecordingCurrent' });
+    } else {
+      chrome.runtime.sendMessage({ action: 'pauseRecording' });
+    }
+  });
+
   hudElement.querySelector('.btn-stop').addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'stopRecording' });
   });
@@ -415,7 +531,7 @@ function generateActionDescription(el, typeOverride = null) {
 
 // Click listener on capture phase
 document.addEventListener('click', (event) => {
-  if (!isRecording) return;
+  if (!isRecording || isPaused) return;
   console.log("[Steply] Click event detected on:", event.target);
   
   // Use composedPath for Shadow DOM support
@@ -423,6 +539,11 @@ document.addEventListener('click', (event) => {
   const target = (path && path.length > 0) ? path[0] : event.target;
   
   if (!(target instanceof Element)) return;
+
+  // Ignore events that occur on HUD itself or Toast elements
+  if (target.closest('.steply-hud') || target.closest('.steply-toast')) {
+    return;
+  }
 
   // Refine target: if the user clicked an icon or SVG inside a button/link,
   // we should target the interactive parent for a better CSS selector.
@@ -519,10 +640,15 @@ const SCROLL_DEBOUNCE_MS = 500;  // more responsive
 const SCROLL_MIN_PX = 50;        // catch smaller movements
 
 window.addEventListener('scroll', (event) => {
-  if (!isRecording) return;
+  if (!isRecording || isPaused) return;
 
   // Identify the actual scroll target (window or specific element)
   const target = (event.target === document || event.target === window) ? window : event.target;
+  
+  if (target instanceof Element && (target.closest('.steply-hud') || target.closest('.steply-toast'))) {
+    return;
+  }
+
   const isWindow = target === window;
   
   const currentY = isWindow ? window.scrollY : target.scrollTop;
@@ -647,11 +773,15 @@ function getFieldLabel(el) {
 }
 
 document.addEventListener('blur', (event) => {
-  if (!isRecording) return;
+  if (!isRecording || isPaused) return;
 
   const path = event.composedPath && event.composedPath();
   const target = (path && path.length > 0) ? path[0] : event.target;
   if (!(target instanceof Element)) return;
+
+  if (target.closest('.steply-hud') || target.closest('.steply-toast')) {
+    return;
+  }
 
   const tag = target.tagName.toLowerCase();
   const isContentEditable = target.isContentEditable;

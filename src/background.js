@@ -10,6 +10,7 @@ const CRITICAL_RATIO = 0.85;    // stop saving at 85 % storage used
 let db;
 let currentGuide = null;
 let isRecording   = false;
+let isPaused      = false;
 let stepQueue     = [];
 let isProcessing  = false;
 let isInitializingGuide = false;
@@ -46,8 +47,9 @@ function openDB() {
 // which caused processStep to create a brand-new guide instead of resuming.
 let dbReady = openDB().then(() => {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['isRecording', 'activeGuideId'], (res) => {
+    chrome.storage.local.get(['isRecording', 'activeGuideId', 'isPaused'], (res) => {
       if (res.isRecording) isRecording = true;
+      if (res.isPaused) isPaused = true;
       if (res.activeGuideId) {
         const tx  = db.transaction(['guides'], 'readonly');
         const req = tx.objectStore('guides').get(res.activeGuideId);
@@ -246,6 +248,10 @@ async function handleMessage(message, sender, sendResponse) {
 
   // ── processStep ────────────────────────────────────────────────────────────
   if (message.action === 'processStep') {
+    if (isPaused) {
+      sendResponse({ status: 'ignored_paused' });
+      return;
+    }
     const step = message.step;
     
     // Deduplication logic: ignore rapid identical interactions
@@ -289,6 +295,8 @@ async function handleMessage(message, sender, sendResponse) {
     try {
       const res = await new Promise(r => chrome.storage.local.get(['highlightColor'], r));
       isRecording  = true;
+      isPaused     = false;
+      chrome.storage.local.set({ isPaused: false });
       currentGuide = {
         id:        'guide_' + Date.now(),
         title:     'Guide created ' + new Date().toLocaleString(),
@@ -318,6 +326,8 @@ async function handleMessage(message, sender, sendResponse) {
   // ── stopRecording ──────────────────────────────────────────────────────────
   if (message.action === 'stopRecording') {
     isRecording  = false;
+    isPaused     = false;
+    chrome.storage.local.set({ isPaused: false });
     currentGuide = null;
     persistState();
     broadcast('stopRecording');
@@ -358,7 +368,25 @@ async function handleMessage(message, sender, sendResponse) {
 
   // ── getRecordingStatus ─────────────────────────────────────────────────────
   if (message.action === 'getRecordingStatus') {
-    sendResponse({ isRecording, guideId: currentGuide?.id || null });
+    sendResponse({ isRecording, isPaused, guideId: currentGuide?.id || null, stepCount: currentGuide?.stepCount || 0 });
+    return;
+  }
+
+  // ── pauseRecording ─────────────────────────────────────────────────────────
+  if (message.action === 'pauseRecording') {
+    isPaused = true;
+    chrome.storage.local.set({ isPaused: true });
+    broadcast('recordingPaused');
+    sendResponse({ status: 'paused' });
+    return;
+  }
+
+  // ── resumeRecordingCurrent ──────────────────────────────────────────────────
+  if (message.action === 'resumeRecordingCurrent') {
+    isPaused = false;
+    chrome.storage.local.set({ isPaused: false });
+    broadcast('recordingResumed');
+    sendResponse({ status: 'resumed' });
     return;
   }
 

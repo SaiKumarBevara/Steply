@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   let isRecording = false;
+  let isPaused = false;
 
   // ── Default Filter Selection ───────────────────────────────────────────────
   const btnRed = document.getElementById('color-red');
@@ -80,11 +81,19 @@ document.addEventListener('DOMContentLoaded', () => {
       recordIcon.className = 'ti ti-player-stop';
       recordLabel.textContent = 'Stop recording';
       
-      statusWrapper.style.color = '#B91C1C';
-      statusWrapper.style.background = '#FEE2E2';
-      statusDot.style.background = '#DC2626';
-      statusDot.classList.add('recording-pulse');
-      statusText.textContent = 'Recording';
+      if (isPaused) {
+        statusWrapper.style.color = '#4b5563';
+        statusWrapper.style.background = '#f3f4f6';
+        statusDot.style.background = '#9ca3af';
+        statusDot.classList.remove('recording-pulse');
+        statusText.textContent = 'Paused';
+      } else {
+        statusWrapper.style.color = '#B91C1C';
+        statusWrapper.style.background = '#FEE2E2';
+        statusDot.style.background = '#DC2626';
+        statusDot.classList.add('recording-pulse');
+        statusText.textContent = 'Recording';
+      }
     } else {
       recordBtn.style.background = '#185FA5';
       recordIcon.className = 'ti ti-player-record';
@@ -104,6 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.runtime.sendMessage({ action: 'getRecordingStatus' }, (res) => {
       if (res) { 
         isRecording = res.isRecording; 
+        isPaused = res.isPaused;
         updateUI(); 
       }
     });
@@ -262,6 +272,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // Release lock after all messages sent
     isLoadingGuides = false;
   }
+
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'recordingPaused') {
+      isPaused = true;
+      updateUI();
+    } else if (request.action === 'recordingResumed') {
+      isPaused = false;
+      updateUI();
+    } else if (request.action === 'startRecording') {
+      isRecording = true;
+      isPaused = false;
+      updateUI();
+    } else if (request.action === 'stopRecording') {
+      isRecording = false;
+      isPaused = false;
+      updateUI();
+    }
+  });
 
   loadGuides();
   // BUG 18: store interval ID and clear it when the popup unloads,

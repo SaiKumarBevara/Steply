@@ -64,20 +64,40 @@ const path = require('path');
   // 3. Go back to test page and click around
   await page.bringToFront();
   
-  // Click on the H1
+  // Click on the H1 (creates step 1)
   const h1 = await page.$('h1');
   const h1Box = await h1.boundingBox();
   await page.mouse.click(h1Box.x + h1Box.width / 2, h1Box.y + h1Box.height / 2);
-  console.log('Clicked H1 element');
-  
-  // Wait for dedupe timer + processing time
-  await new Promise(r => setTimeout(r, 1500));
-  
-  // Click on the paragraph
+  console.log('Clicked H1 element (step 1)');
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Pause recording by clicking .btn-pause in HUD inside the page
+  console.log('Pausing recording...');
+  await page.waitForSelector('.btn-pause', { visible: true });
+  await page.click('.btn-pause');
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Click on the paragraph while paused (should be ignored!)
   const p = await page.$('p');
   const pBox = await p.boundingBox();
   await page.mouse.click(pBox.x + pBox.width / 2, pBox.y + pBox.height / 2);
-  console.log('Clicked paragraph');
+  console.log('Clicked paragraph while paused (should be ignored)');
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Resume recording by clicking .btn-pause again
+  console.log('Resuming recording...');
+  await page.click('.btn-pause');
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Click on paragraph again while active (creates step 2)
+  await page.mouse.click(pBox.x + pBox.width / 2, pBox.y + pBox.height / 2);
+  console.log('Clicked paragraph after resuming (step 2)');
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Stop recording by clicking Stop button in HUD inside page
+  console.log('Stopping recording via HUD Stop button...');
+  await page.click('.btn-stop');
+  await new Promise(r => setTimeout(r, 2000));
 
   await new Promise(r => setTimeout(r, 2000));
 
