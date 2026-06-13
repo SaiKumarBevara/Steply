@@ -141,6 +141,44 @@ hudStyle.textContent = `
     background: #fef2f2 !important;
     color: #dc2626 !important;
   }
+  .steply-hud-close-x {
+    all: initial !important;
+    position: absolute !important;
+    top: -7px !important;
+    right: 8px !important;
+    width: 16px !important;
+    height: 16px !important;
+    background: #ffffff !important;
+    border: 1px solid #60a5fa !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+    color: #6b7280 !important;
+    z-index: 2147483647 !important;
+    box-sizing: border-box !important;
+    transition: background 0.15s, color 0.15s, border-color 0.15s !important;
+  }
+  .steply-hud-close-x:hover {
+    background: #fef2f2 !important;
+    color: #ef4444 !important;
+    border-color: #ef4444 !important;
+  }
+  .steply-hud-close-x svg {
+    all: initial !important;
+    width: 8px !important;
+    height: 8px !important;
+    display: block !important;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 2.5 !important;
+    stroke-linecap: round !important;
+    stroke-linejoin: round !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
   .steply-toast {
     all: initial !important;
     position: fixed !important;
@@ -303,8 +341,11 @@ function createHUD() {
     <button class="steply-hud-btn btn-cancel" title="Cancel & Delete Recording">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
     </button>
-    <button class="steply-hud-btn btn-close" title="Hide HUD (keeps recording)">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    <button class="steply-hud-close-x" title="Hide HUD (keeps recording)">
+      <svg viewBox="0 0 24 24">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </svg>
     </button>
   `;
 
@@ -346,7 +387,7 @@ function createHUD() {
     }
   });
 
-  hudElement.querySelector('.btn-close').addEventListener('click', () => {
+  hudElement.querySelector('.steply-hud-close-x').addEventListener('click', () => {
     isHudClosedSession = true;
     updateHUD();
   });
