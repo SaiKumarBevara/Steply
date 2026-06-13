@@ -297,7 +297,9 @@ async function handleMessage(message, sender, sendResponse) {
         updatedAt: new Date().toISOString(),
         stepCount: 0,
         defaultColor: res.highlightColor || 'red',
-        showTimestamp: false
+        showTimestamp: false,
+        timestampPosition: 'bottom_right',
+        timestampStyle: 'dark'
       };
       await saveGuide(currentGuide);
       persistState();
@@ -523,15 +525,17 @@ async function handleMessage(message, sender, sendResponse) {
     return;
   }
 
-  // ── updateGuideTimestamp ───────────────────────────────────────────────────
-  if (message.action === 'updateGuideTimestamp') {
+  // ── updateGuideTimestampOptions ───────────────────────────────────────────
+  if (message.action === 'updateGuideTimestampOptions') {
     let hasResponded = false;
     const tx  = db.transaction(['guides'], 'readwrite');
     const req = tx.objectStore('guides').get(message.guideId);
     req.onsuccess = (e) => {
       const guide = e.target.result;
       if (guide) {
-        guide.showTimestamp = message.showTimestamp;
+        if (message.showTimestamp !== undefined) guide.showTimestamp = message.showTimestamp;
+        if (message.timestampPosition !== undefined) guide.timestampPosition = message.timestampPosition;
+        if (message.timestampStyle !== undefined) guide.timestampStyle = message.timestampStyle;
         tx.objectStore('guides').put(guide);
       } else {
         hasResponded = true;
@@ -593,7 +597,9 @@ async function processNextStep() {
         updatedAt: new Date().toISOString(),
         stepCount: 0,
         defaultColor: res.highlightColor || 'red',
-        showTimestamp: false
+        showTimestamp: false,
+        timestampPosition: 'bottom_right',
+        timestampStyle: 'dark'
       };
       await saveGuide(currentGuide);
       persistState();
@@ -634,7 +640,7 @@ async function processNextStep() {
     broadcast({ action: 'processStep', step, guideId: currentGuide.id });
     
     try {
-      sendResponse({ success: true, stepId: step.id });
+      sendResponse({ success: true, stepId: step.id, stepCount: currentGuide.stepCount });
     } catch (_) {}
 
   } catch (e) {

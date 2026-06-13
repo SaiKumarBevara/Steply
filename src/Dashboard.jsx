@@ -72,7 +72,83 @@ const HIGHLIGHT_COLORS = {
   none:  null,
 };
 
-async function getAnnotatedDataUrl(step, colorKey, showTimestamp) {
+function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right', style = 'dark') {
+  if (!timestamp) return;
+  const dateText = new Date(timestamp).toLocaleString();
+  
+  // Style configurations
+  let font = 'bold 20px "DM Sans", sans-serif';
+  let textColor = '#FFFFFF';
+  let bgColor = 'rgba(17, 24, 39, 0.75)';
+  let drawBox = true;
+  let textOutline = false;
+  
+  if (style === 'digital_orange') {
+    font = 'bold 20px "DM Mono", monospace';
+    textColor = '#FF5500';
+    bgColor = 'rgba(0, 0, 0, 0.85)';
+  } else if (style === 'watermark') {
+    font = 'bold 22px "DM Sans", sans-serif';
+    textColor = 'rgba(255, 255, 255, 0.45)';
+    drawBox = false;
+    textOutline = true;
+  }
+  
+  ctx.font = font;
+  const textWidth = ctx.measureText(dateText).width;
+  const paddingX = 15;
+  const paddingY = 8;
+  const boxWidth = textWidth + paddingX * 2;
+  const boxHeight = 24 + paddingY * 2; // ~40px total height
+  
+  // Determine coordinates based on position
+  let x = 0;
+  let y = 0;
+  const margin = 20;
+  
+  switch (position) {
+    case 'top_left':
+      x = margin;
+      y = margin;
+      break;
+    case 'top_right':
+      x = canvas.width - boxWidth - margin;
+      y = margin;
+      break;
+    case 'bottom_left':
+      x = margin;
+      y = canvas.height - boxHeight - margin;
+      break;
+    case 'bottom_right':
+    default:
+      x = canvas.width - boxWidth - margin;
+      y = canvas.height - boxHeight - margin;
+      break;
+  }
+  
+  ctx.save();
+  if (drawBox) {
+    ctx.fillStyle = bgColor;
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(x, y, boxWidth, boxHeight, 6) : ctx.rect(x, y, boxWidth, boxHeight);
+    ctx.fill();
+  }
+  
+  ctx.fillStyle = textColor;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  
+  if (textOutline) {
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(dateText, x + paddingX, y + paddingY);
+  }
+  
+  ctx.fillText(dateText, x + paddingX, y + paddingY);
+  ctx.restore();
+}
+
+async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosition, timestampStyle) {
   const screenshotResult = await resolveScreenshotUrl(step);
   if (!screenshotResult) return null;
   const { url: srcUrl, revoke } = screenshotResult;
@@ -95,16 +171,8 @@ async function getAnnotatedDataUrl(step, colorKey, showTimestamp) {
         ctx.fillRect(x - w/2, y - h/2, w, h);
       }
       
-      if (showTimestamp && step.timestamp) {
-        const dateText = new Date(step.timestamp).toLocaleString();
-        ctx.font = 'bold 20px "DM Sans", sans-serif';
-        const textWidth = ctx.measureText(dateText).width;
-        ctx.fillStyle = 'rgba(17, 24, 39, 0.75)';
-        ctx.fillRect(canvas.width - textWidth - 30, canvas.height - 46, textWidth + 20, 36);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(dateText, canvas.width - textWidth - 20, canvas.height - 28);
+      if (showTimestamp) {
+        drawTimestampOnCanvas(canvas, ctx, step.timestamp, timestampPosition, timestampStyle);
       }
 
       // Use PNG for clipboard support (JPEG is often rejected by browsers for ClipboardItem)
@@ -117,7 +185,7 @@ async function getAnnotatedDataUrl(step, colorKey, showTimestamp) {
   });
 }
 
-function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = false }) {
+function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = false, timestampPosition = 'bottom_right', timestampStyle = 'dark' }) {
   const canvasRef = useRef(null);
   // imgRef keeps the decoded image so we can redraw without re-fetching
   const imgRef = useRef(null);
@@ -137,7 +205,7 @@ function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = false 
       img.onload = () => {
         if (cancelled) return;
         imgRef.current = img;
-        drawCanvas(img, highlightColor, showTimestamp);
+        drawCanvas(img, highlightColor, showTimestamp, timestampPosition, timestampStyle);
       };
       // BUG J: handle broken/missing blob URLs — clear canvas and show error text
       img.onerror = () => {
@@ -163,10 +231,10 @@ function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = false 
 
   // Redraw when color or timestamp visibility changes (no re-fetch needed)
   useEffect(() => {
-    if (imgRef.current) drawCanvas(imgRef.current, highlightColor, showTimestamp);
-  }, [highlightColor, showTimestamp]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (imgRef.current) drawCanvas(imgRef.current, highlightColor, showTimestamp, timestampPosition, timestampStyle);
+  }, [highlightColor, showTimestamp, timestampPosition, timestampStyle]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function drawCanvas(img, color, showTime) {
+  function drawCanvas(img, color, showTime, position, style) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -188,16 +256,8 @@ function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = false 
       ctx.fillRect(x - w/2, y - h/2, w, h);
     }
 
-    if (showTime && step.timestamp) {
-      const dateText = new Date(step.timestamp).toLocaleString();
-      ctx.font = 'bold 20px "DM Sans", sans-serif';
-      const textWidth = ctx.measureText(dateText).width;
-      ctx.fillStyle = 'rgba(17, 24, 39, 0.75)';
-      ctx.fillRect(canvas.width - textWidth - 30, canvas.height - 46, textWidth + 20, 36);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(dateText, canvas.width - textWidth - 20, canvas.height - 28);
+    if (showTime) {
+      drawTimestampOnCanvas(canvas, ctx, step.timestamp, position, style);
     }
   }
 
@@ -379,10 +439,27 @@ function RedactionWorkspace({ step, onSave, onCancel }) {
   );
 }
 
-const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteStep, updateStepColor, guideColor, showTimestamp, onRedact }) => {
+const StepCard = ({ 
+  step, 
+  index, 
+  updateStepText, 
+  updateStepDescription, 
+  deleteStep, 
+  updateStepColor, 
+  guideColor, 
+  showTimestamp, 
+  timestampPosition, 
+  timestampStyle, 
+  onRedact, 
+  duplicateStep, 
+  draggingIndex, 
+  setDraggingIndex, 
+  handleReorderSteps 
+}) => {
   const [desc, setDesc] = useState(step.description || '');
   const [action, setAction] = useState(step.action || '');
   const [isEditingAction, setIsEditingAction] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const activeColor = step.color || guideColor;
 
   // BUG 15: keep textarea in sync if parent updates step.description externally
@@ -404,8 +481,33 @@ const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteSt
   };
 
   return (
-    <div className="step-card">
+    <div 
+      className={`step-card ${isDragOver ? 'drag-over' : ''} ${draggingIndex === index ? 'dragging' : ''}`}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/plain', index.toString());
+        setDraggingIndex(index);
+      }}
+      onDragEnd={() => setDraggingIndex(null)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (draggingIndex !== index) {
+          setIsDragOver(true);
+        }
+      }}
+      onDragLeave={() => setIsDragOver(false)}
+      onDrop={async (e) => {
+        setIsDragOver(false);
+        const fromIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+        const toIdx = index;
+        if (fromIdx === toIdx) return;
+        await handleReorderSteps(fromIdx, toIdx);
+      }}
+    >
       <div className="step-header">
+        <div className="drag-handle" title="Drag to reorder step">
+          <i className="ti ti-grip-vertical"></i>
+        </div>
         <div className="step-num">{index + 1}</div>
         
         {isEditingAction ? (
@@ -431,24 +533,25 @@ const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteSt
         
         {!isEditingAction && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-            {/* Step Level Color Override */}
-            <div className="trinity-toggle" style={{ padding: '1px', gap: '1px' }} title="Step color override">
-              <button
-                className={`trinity-btn ${activeColor === 'red' ? 'active-red' : ''}`}
-                style={{ padding: '3px 6px' }}
-                onClick={() => updateStepColor(step, 'red')}
-              ><span className="trinity-dot" style={{ background: '#EF4444' }} /></button>
-              <button
-                className={`trinity-btn ${activeColor === 'green' ? 'active-green' : ''}`}
-                style={{ padding: '3px 6px' }}
-                onClick={() => updateStepColor(step, 'green')}
-              ><span className="trinity-dot" style={{ background: '#16A34A' }} /></button>
-              <button
-                className={`trinity-btn ${activeColor === 'none' ? 'active-none' : ''}`}
-                style={{ padding: '3px 6px' }}
-                onClick={() => updateStepColor(step, 'none')}
-              ><i className="ti ti-eye-off" style={{ fontSize: '11px' }} /></button>
-            </div>
+            {step.stepType !== 'note' && (
+              <div className="trinity-toggle" style={{ padding: '1px', gap: '1px' }} title="Step color override">
+                <button
+                  className={`trinity-btn ${activeColor === 'red' ? 'active-red' : ''}`}
+                  style={{ padding: '3px 6px' }}
+                  onClick={() => updateStepColor(step, 'red')}
+                ><span className="trinity-dot" style={{ background: '#EF4444' }} /></button>
+                <button
+                  className={`trinity-btn ${activeColor === 'green' ? 'active-green' : ''}`}
+                  style={{ padding: '3px 6px' }}
+                  onClick={() => updateStepColor(step, 'green')}
+                ><span className="trinity-dot" style={{ background: '#16A34A' }} /></button>
+                <button
+                  className={`trinity-btn ${activeColor === 'none' ? 'active-none' : ''}`}
+                  style={{ padding: '3px 6px' }}
+                  onClick={() => updateStepColor(step, 'none')}
+                ><i className="ti ti-eye-off" style={{ fontSize: '11px' }} /></button>
+              </div>
+            )}
 
             <span className="step-type">
               {step.stepType || (step.elementData ? 'click' : 'scroll')}
@@ -456,66 +559,78 @@ const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteSt
             <button className="btn-danger" style={{ padding: '4px', border: 'none' }} onClick={() => deleteStep(step)} title="Delete step">
               <i className="ti ti-trash" style={{ fontSize: '13px' }}></i>
             </button>
+            {step.stepType !== 'note' && (
+              <button 
+                className="btn-secondary" 
+                style={{ padding: '4px' }} 
+                onClick={() => onRedact(step)}
+                title="Redact sensitive info"
+              >
+                <i className="ti ti-shield-lock" style={{ fontSize: '13px' }}></i>
+              </button>
+            )}
             <button 
               className="btn-secondary" 
               style={{ padding: '4px' }} 
-              onClick={() => onRedact(step)}
-              title="Redact sensitive info"
+              onClick={() => duplicateStep(step, index)}
+              title="Duplicate step"
             >
-              <i className="ti ti-shield-lock" style={{ fontSize: '13px' }}></i>
+              <i className="ti ti-files" style={{ fontSize: '13px', color: '#185FA5' }}></i>
             </button>
-            <button 
-              className="btn-secondary" 
-              style={{ padding: '4px' }} 
-              onClick={async (e) => {
-                const btn = e.currentTarget;
-                const icon = btn.querySelector('i');
-                const originalClass = icon.className;
-                
-                try {
-                  icon.className = 'ti ti-loader rotate';
-                  const activeColor = step.color || guideColor || 'red';
-                  const dataUrl = await getAnnotatedDataUrl(step, activeColor, showTimestamp);
+            {step.stepType !== 'note' && (
+              <button 
+                className="btn-secondary" 
+                style={{ padding: '4px' }} 
+                onClick={async (e) => {
+                  const btn = e.currentTarget;
+                  const icon = btn.querySelector('i');
+                  const originalClass = icon.className;
                   
-                  const plainText = `${step.action}${step.description ? '\n' + step.description : ''}`;
-                  const clipboardData = {
-                    'text/plain': new Blob([plainText], { type: 'text/plain' })
-                  };
-
-                  if (dataUrl) {
-                    const response = await fetch(dataUrl);
-                    const blob = await response.blob();
-                    clipboardData['image/png'] = blob;
+                  try {
+                    icon.className = 'ti ti-loader rotate';
+                    const activeColor = step.color || guideColor || 'red';
+                    const dataUrl = await getAnnotatedDataUrl(step, activeColor, showTimestamp, timestampPosition, timestampStyle);
                     
-                    // Add HTML part so rich text editors (Gmail, Slack) paste both text and image!
-                    const htmlContent = `
-                      <div style="font-family: sans-serif;">
-                        <h3 style="margin:0 0 8px; color:#185FA5;">${step.action}</h3>
-                        ${step.description ? `<p style="margin:0 0 12px; color:#4b5563;">${step.description}</p>` : ''}
-                        <img src="${dataUrl}" style="max-width:100%; border-radius:8px; border:1px solid #e5e7eb;" />
-                      </div>
-                    `;
-                    clipboardData['text/html'] = new Blob([htmlContent], { type: 'text/html' });
-                  }
+                    const plainText = `${step.action}${step.description ? '\n' + step.description : ''}`;
+                    const clipboardData = {
+                      'text/plain': new Blob([plainText], { type: 'text/plain' })
+                    };
 
-                  await navigator.clipboard.write([
-                    new ClipboardItem(clipboardData)
-                  ]);
-                  
-                  icon.className = 'ti ti-check';
-                  setTimeout(() => { icon.className = originalClass; }, 2000);
-                } catch (err) {
-                  console.error('Clipboard error:', err);
-                  // Fallback: copy text only
-                  navigator.clipboard.writeText(step.action);
-                  icon.className = 'ti ti-alert-circle';
-                  setTimeout(() => { icon.className = originalClass; }, 2000);
-                }
-              }}
-              title="Copy step (Text & Image)"
-            >
-              <i className="ti ti-copy" style={{ fontSize: '13px' }}></i>
-            </button>
+                    if (dataUrl) {
+                      const response = await fetch(dataUrl);
+                      const blob = await response.blob();
+                      clipboardData['image/png'] = blob;
+                      
+                      // Add HTML part so rich text editors (Gmail, Slack) paste both text and image!
+                      const htmlContent = `
+                        <div style="font-family: sans-serif;">
+                          <h3 style="margin:0 0 8px; color:#185FA5;">${step.action}</h3>
+                          ${step.description ? `<p style="margin:0 0 12px; color:#4b5563;">${step.description}</p>` : ''}
+                          <img src="${dataUrl}" style="max-width:100%; border-radius:8px; border:1px solid #e5e7eb;" />
+                        </div>
+                      `;
+                      clipboardData['text/html'] = new Blob([htmlContent], { type: 'text/html' });
+                    }
+
+                    await navigator.clipboard.write([
+                      new ClipboardItem(clipboardData)
+                    ]);
+                    
+                    icon.className = 'ti ti-check';
+                    setTimeout(() => { icon.className = originalClass; }, 2000);
+                  } catch (err) {
+                    console.error('Clipboard error:', err);
+                    // Fallback: copy text only
+                    navigator.clipboard.writeText(step.action);
+                    icon.className = 'ti ti-alert-circle';
+                    setTimeout(() => { icon.className = originalClass; }, 2000);
+                  }
+                }}
+                title="Copy step (Text & Image)"
+              >
+                <i className="ti ti-copy" style={{ fontSize: '13px' }}></i>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -538,18 +653,26 @@ const StepCard = ({ step, index, updateStepText, updateStepDescription, deleteSt
         onBlur={handleDescBlur}
       />
 
-      <div className={`screenshot-area ${(step.screenshot || step.screenshotId) ? '' : 'empty'}`}>
-        {(step.screenshot || step.screenshotId) ? (
-          <ScreenshotCanvas step={step} highlightColor={activeColor} showTimestamp={showTimestamp} />
-        ) : (
-          <>
-            <div className="highlight-box">
-              <i className="ti ti-crop"></i>
-            </div>
-            <p className="empty-text">Screenshot captured</p>
-          </>
-        )}
-      </div>
+      {step.stepType !== 'note' && (
+        <div className={`screenshot-area ${(step.screenshot || step.screenshotId) ? '' : 'empty'}`}>
+          {(step.screenshot || step.screenshotId) ? (
+            <ScreenshotCanvas 
+              step={step} 
+              highlightColor={activeColor} 
+              showTimestamp={showTimestamp} 
+              timestampPosition={timestampPosition} 
+              timestampStyle={timestampStyle} 
+            />
+          ) : (
+            <>
+              <div className="highlight-box">
+                <i className="ti ti-crop"></i>
+              </div>
+              <p className="empty-text">Screenshot captured</p>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -565,6 +688,17 @@ export default function Dashboard() {
   const [isRecording, setIsRecording]       = useState(false);
   const [activeGuideId, setActiveGuideId]   = useState(null);
   const [redactingStep, setRedactingStep]   = useState(null);
+
+  // Premium Enhancements States
+  const [draggingIndex, setDraggingIndex] = useState(null);
+  const [exportProgress, setExportProgress] = useState(null);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [includeCoverPage, setIncludeCoverPage] = useState(false);
+  const [coverTitle, setCoverTitle] = useState('');
+  const [coverSubtitle, setCoverSubtitle] = useState('Step-by-step Guide');
+  const [coverAuthor, setCoverAuthor] = useState('');
+  const [coverOrg, setCoverOrg] = useState('');
+  const [coverLogo, setCoverLogo] = useState(null);
   
   // ── Bulk Export State ──────────────────────────────────────────────────
   const [bulkMode, setBulkMode]             = useState(false);
@@ -575,6 +709,12 @@ export default function Dashboard() {
   const [bulkTitleInput, setBulkTitleInput] = useState('Bulk Export');
 
   const lastRequestedId = useRef(null);
+
+  useEffect(() => {
+    if (selectedGuide) {
+      setCoverTitle(selectedGuide.title || '');
+    }
+  }, [selectedGuide]);
 
   useEffect(() => {
     loadGuides();
@@ -811,129 +951,709 @@ export default function Dashboard() {
   const sanitizeFilename = (title) =>
     (title || 'Untitled').replace(/[/\\:*?"<>|]/g, '-').replace(/^[-\s]+|[-\s]+$/g, '') || 'Untitled';
 
+  // ── Timeline Operations (Premium) ──────────────────────────────────────────
+  const handleReorderSteps = async (fromIdx, toIdx) => {
+    const steps = [...selectedGuide.steps];
+    const [moved] = steps.splice(fromIdx, 1);
+    steps.splice(toIdx, 0, moved);
+
+    // Reassign sequential timestamps
+    const baseTime = new Date(selectedGuide.createdAt || Date.now()).getTime();
+    const updatedSteps = steps.map((s, idx) => ({
+      ...s,
+      timestamp: new Date(baseTime + idx * 10000).toISOString()
+    }));
+
+    try {
+      const db = await openDashboardDb();
+      const tx = db.transaction(['steps', 'guides'], 'readwrite');
+      const stepsStore = tx.objectStore('steps');
+      const guideStore = tx.objectStore('guides');
+
+      for (const step of updatedSteps) {
+        stepsStore.put(step);
+      }
+
+      const guide = await new Promise(r => {
+        guideStore.get(selectedGuide.id).onsuccess = (e) => r(e.target.result);
+      });
+      if (guide) {
+        guide.updatedAt = new Date().toISOString();
+        guideStore.put(guide);
+      }
+
+      tx.oncomplete = () => {
+        setSelectedGuide({ 
+          ...selectedGuide, 
+          steps: updatedSteps,
+          updatedAt: new Date().toISOString() 
+        });
+        loadGuides();
+      };
+    } catch (e) {
+      alert("Failed to reorder steps: " + e.message);
+    }
+  };
+
+  const duplicateStep = async (step, index) => {
+    try {
+      const db = await openDashboardDb();
+      const newStepId = Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+      const newScreenshotId = step.screenshotId ? 'ss_' + newStepId : null;
+
+      const tx = db.transaction(['steps', 'screenshots', 'guides'], 'readwrite');
+      const stepsStore = tx.objectStore('steps');
+      const ssStore = tx.objectStore('screenshots');
+      const guideStore = tx.objectStore('guides');
+
+      let ssSize = 0;
+      if (step.screenshotId) {
+        const originalSs = await new Promise(r => {
+          ssStore.get(step.screenshotId).onsuccess = (e) => r(e.target.result);
+        });
+        if (originalSs) {
+          ssSize = originalSs.blob?.size || 0;
+          ssStore.put({
+            id: newScreenshotId,
+            guideId: selectedGuide.id,
+            blob: originalSs.blob
+          });
+        }
+      }
+
+      const newStep = {
+        ...step,
+        id: newStepId,
+        screenshotId: newScreenshotId,
+        action: step.action + ' (Copy)',
+        timestamp: new Date(new Date(step.timestamp).getTime() + 5000).toISOString()
+      };
+
+      stepsStore.put(newStep);
+
+      const guide = await new Promise(r => {
+        guideStore.get(selectedGuide.id).onsuccess = (e) => r(e.target.result);
+      });
+      if (guide) {
+        guide.stepCount = (guide.stepCount || 0) + 1;
+        guide.storageBytes = (guide.storageBytes || 0) + ssSize;
+        guide.updatedAt = new Date().toISOString();
+        guideStore.put(guide);
+      }
+
+      tx.oncomplete = () => {
+        const newSteps = [...selectedGuide.steps];
+        newSteps.splice(index + 1, 0, newStep);
+        
+        const baseTime = new Date(selectedGuide.createdAt || Date.now()).getTime();
+        const sequentiallyTimeSteps = newSteps.map((s, idx) => ({
+          ...s,
+          timestamp: new Date(baseTime + idx * 10000).toISOString()
+        }));
+
+        const tx2 = db.transaction(['steps'], 'readwrite');
+        for (const s of sequentiallyTimeSteps) {
+          tx2.objectStore('steps').put(s);
+        }
+        tx2.oncomplete = () => {
+          setSelectedGuide({
+            ...selectedGuide,
+            steps: sequentiallyTimeSteps,
+            stepCount: sequentiallyTimeSteps.length,
+            updatedAt: new Date().toISOString()
+          });
+          loadGuides();
+          loadStorageStats();
+        };
+      };
+    } catch (e) {
+      alert("Failed to duplicate step: " + e.message);
+    }
+  };
+
+  const handleInsertBlankStep = async (insertIndex) => {
+    try {
+      const db = await openDashboardDb();
+      const newStepId = Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+
+      const tx = db.transaction(['steps', 'guides'], 'readwrite');
+      const stepsStore = tx.objectStore('steps');
+      const guideStore = tx.objectStore('guides');
+
+      const newStep = {
+        id: newStepId,
+        guideId: selectedGuide.id,
+        action: 'New Note Card',
+        description: '',
+        stepType: 'note',
+        timestamp: new Date().toISOString()
+      };
+
+      stepsStore.put(newStep);
+
+      const guide = await new Promise(r => {
+        guideStore.get(selectedGuide.id).onsuccess = (e) => r(e.target.result);
+      });
+      if (guide) {
+        guide.stepCount = (guide.stepCount || 0) + 1;
+        guide.updatedAt = new Date().toISOString();
+        guideStore.put(guide);
+      }
+
+      tx.oncomplete = () => {
+        const newSteps = [...selectedGuide.steps];
+        newSteps.splice(insertIndex, 0, newStep);
+
+        const baseTime = new Date(selectedGuide.createdAt || Date.now()).getTime();
+        const sequentiallyTimeSteps = newSteps.map((s, idx) => ({
+          ...s,
+          timestamp: new Date(baseTime + idx * 10000).toISOString()
+        }));
+
+        const tx2 = db.transaction(['steps'], 'readwrite');
+        for (const s of sequentiallyTimeSteps) {
+          tx2.objectStore('steps').put(s);
+        }
+        tx2.oncomplete = () => {
+          setSelectedGuide({
+            ...selectedGuide,
+            steps: sequentiallyTimeSteps,
+            stepCount: sequentiallyTimeSteps.length,
+            updatedAt: new Date().toISOString()
+          });
+          loadGuides();
+        };
+      };
+    } catch (e) {
+      alert("Failed to insert blank step: " + e.message);
+    }
+  };
+
+  // ── Single Export Operations ───────────────────────────────────────────────
   const exportPDF = async () => {
     if (!selectedGuide?.steps?.length) return;
-    const doc = new jsPDF();
-    doc.setFontSize(20);
-    doc.text(selectedGuide.title, 10, 20);
-    let y = 40;
-    for (let i = 0; i < selectedGuide.steps.length; i++) {
-      const step = selectedGuide.steps[i];
-      if (y > 250) { doc.addPage(); y = 20; }
-      doc.setFontSize(14);
-      doc.text(`Step ${i + 1}: ${step.action}`, 10, y); y += 8;
-      if (step.description) {
-        doc.setFontSize(11); doc.setTextColor(100);
-        const lines = doc.splitTextToSize(step.description, 180);
-        doc.text(lines, 10, y); y += lines.length * 6 + 4;
-        doc.setTextColor(0);
-      }
-      y += 4;
-      if (step.screenshot || step.screenshotId) {
-        const stepColor = step.color || selectedGuide.defaultColor || 'red';
-        const annotated = await getAnnotatedDataUrl(step, stepColor, selectedGuide.showTimestamp);
-        if (annotated) {
-          doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
-          y += 110;
-        } else {
-          doc.setFontSize(10);
-          doc.setTextColor(150);
-          doc.text("[Image not available]", 10, y + 5);
-          y += 15;
+    setExportProgress({ current: 0, total: selectedGuide.steps.length, format: 'PDF' });
+    
+    try {
+      const doc = new jsPDF();
+      let isFirstPage = true;
+
+      if (includeCoverPage) {
+        isFirstPage = false;
+        // Top right Logo
+        if (coverLogo) {
+          try {
+            doc.addImage(coverLogo, 'PNG', 140, 20, 50, 25);
+          } catch (e) {
+            console.error("PDF logo error:", e);
+          }
         }
-        if (y > 250) { doc.addPage(); y = 20; }
+        
+        // Large Title
+        doc.setFontSize(28);
+        doc.setTextColor(24, 95, 165); // Steply primary blue
+        const splitTitle = doc.splitTextToSize(coverTitle || selectedGuide.title || 'Untitled Guide', 170);
+        doc.text(splitTitle, 20, 80);
+        
+        // Subtitle
+        if (coverSubtitle) {
+          doc.setFontSize(16);
+          doc.setTextColor(75, 85, 99); // gray-600
+          doc.text(coverSubtitle, 20, 80 + splitTitle.length * 10);
+        }
+        
+        // Separator line
+        doc.setDrawColor(229, 231, 235);
+        doc.setLineWidth(1);
+        doc.line(20, 140, 190, 140);
+        
+        // Meta info
+        doc.setFontSize(12);
+        doc.setTextColor(107, 114, 128); // gray-500
+        let metaY = 160;
+        if (coverAuthor) {
+          doc.text(`Created by: ${coverAuthor}`, 20, metaY);
+          metaY += 10;
+        }
+        if (coverOrg) {
+          doc.text(`Organization: ${coverOrg}`, 20, metaY);
+          metaY += 10;
+        }
+        doc.text(`Date: ${new Date().toLocaleDateString()}`, 20, metaY);
       }
+
+      for (let i = 0; i < selectedGuide.steps.length; i++) {
+        const step = selectedGuide.steps[i];
+        
+        if (isFirstPage) {
+          isFirstPage = false;
+        } else {
+          doc.addPage();
+        }
+
+        let y = 20;
+        doc.setFontSize(16);
+        doc.setTextColor(17, 24, 39); // Gray 900
+        const stepTitleLines = doc.splitTextToSize(`Step ${i + 1}: ${step.action}`, 180);
+        doc.text(stepTitleLines, 10, y);
+        y += stepTitleLines.length * 7 + 2;
+
+        if (step.description) {
+          doc.setFontSize(11);
+          doc.setTextColor(100);
+          const lines = doc.splitTextToSize(step.description, 180);
+          doc.text(lines, 10, y);
+          y += lines.length * 6 + 4;
+        }
+        
+        if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
+          const stepColor = step.color || selectedGuide.defaultColor || 'red';
+          const annotated = await getAnnotatedDataUrl(
+            step, 
+            stepColor, 
+            selectedGuide.showTimestamp,
+            selectedGuide.timestampPosition,
+            selectedGuide.timestampStyle
+          );
+          if (annotated) {
+            doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
+          } else {
+            doc.setFontSize(10);
+            doc.setTextColor(150);
+            doc.text("[Image not available]", 10, y + 5);
+          }
+        }
+        
+        setExportProgress({ current: i + 1, total: selectedGuide.steps.length, format: 'PDF' });
+      }
+      
+      doc.save(`${sanitizeFilename(selectedGuide.title)}.pdf`);
+    } catch (err) {
+      alert("Failed to export PDF: " + err.message);
+    } finally {
+      setExportProgress(null);
     }
-    doc.save(`${sanitizeFilename(selectedGuide.title)}.pdf`); // BUG N
   };
 
   const exportMarkdown = async () => {
     if (!selectedGuide?.steps?.length) return;
-    let md = `# ${selectedGuide.title}\n\n`;
-    for (let i = 0; i < selectedGuide.steps.length; i++) {
-      const step = selectedGuide.steps[i];
-      md += `## Step ${i + 1}: ${step.action}\n`;
-      if (step.description) md += `\n> ${step.description}\n`;
-      if (step.screenshot || step.screenshotId) {
-        const stepColor = step.color || selectedGuide.defaultColor || 'red';
-        const annotated = await getAnnotatedDataUrl(step, stepColor, selectedGuide.showTimestamp);
-        if (annotated) md += `\n![Screenshot](${annotated})\n`;
+    setExportProgress({ current: 0, total: selectedGuide.steps.length, format: 'Markdown' });
+    
+    try {
+      let md = '';
+      if (includeCoverPage) {
+        if (coverLogo) md += `![Company Logo](${coverLogo})\n\n`;
+        md += `# ${coverTitle || selectedGuide.title}\n\n`;
+        if (coverSubtitle) md += `## ${coverSubtitle}\n\n`;
+        if (coverAuthor) md += `**Author:** ${coverAuthor}  \n`;
+        if (coverOrg) md += `**Organization:** ${coverOrg}  \n`;
+        md += `**Date:** ${new Date().toLocaleDateString()}\n\n---\n\n`;
+      } else {
+        md += `# ${selectedGuide.title}\n\n`;
       }
-      md += `\n`;
+
+      for (let i = 0; i < selectedGuide.steps.length; i++) {
+        const step = selectedGuide.steps[i];
+        md += `## Step ${i + 1}: ${step.action}\n`;
+        if (step.description) md += `\n> ${step.description}\n`;
+        if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
+          const stepColor = step.color || selectedGuide.defaultColor || 'red';
+          const annotated = await getAnnotatedDataUrl(
+            step, 
+            stepColor, 
+            selectedGuide.showTimestamp,
+            selectedGuide.timestampPosition,
+            selectedGuide.timestampStyle
+          );
+          if (annotated) md += `\n![Screenshot](${annotated})\n`;
+        }
+        md += `\n`;
+        setExportProgress({ current: i + 1, total: selectedGuide.steps.length, format: 'Markdown' });
+      }
+      downloadFile(new Blob([md], { type: 'text/markdown' }), `${sanitizeFilename(selectedGuide.title)}.md`);
+    } catch (err) {
+      alert("Failed to export Markdown: " + err.message);
+    } finally {
+      setExportProgress(null);
     }
-    downloadFile(new Blob([md], { type: 'text/markdown' }), `${sanitizeFilename(selectedGuide.title)}.md`); // BUG N
   };
 
   const exportWord = async () => {
     if (!selectedGuide?.steps?.length) return;
-    const children = [new Paragraph({ text: selectedGuide.title, heading: 'Heading1' })];
-    for (let i = 0; i < selectedGuide.steps.length; i++) {
-      const step = selectedGuide.steps[i];
-      children.push(new Paragraph({ text: `Step ${i + 1}: ${step.action}`, heading: 'Heading2' }));
-      if (step.description) {
-        children.push(new Paragraph({ text: step.description }));
-      }
-      if (step.screenshot || step.screenshotId) {
-        try {
-          const stepColor = step.color || selectedGuide.defaultColor || 'red';
-          const annotated = await getAnnotatedDataUrl(step, stepColor, selectedGuide.showTimestamp);
-          if (annotated) {
-            const b64  = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
-            const bin  = window.atob(b64);
+    setExportProgress({ current: 0, total: selectedGuide.steps.length, format: 'Word' });
+    
+    try {
+      const children = [];
+
+      if (includeCoverPage) {
+        if (coverLogo) {
+          try {
+            const b64 = coverLogo.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+            const bin = window.atob(b64);
             const bytes = new Uint8Array(bin.length);
             for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
-            children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 500, height: 300 } })] }));
-          }
-        } catch (e) { console.error('Word image error:', e); }
+            children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 120, height: 60 } })] }));
+          } catch (e) { console.error('Word logo error:', e); }
+        }
+        
+        children.push(new Paragraph({ text: coverTitle || selectedGuide.title || 'Untitled', heading: 'Title', spacing: { before: 2000, after: 200 } }));
+        if (coverSubtitle) {
+          children.push(new Paragraph({ text: coverSubtitle, heading: 'Subtitle', spacing: { after: 1200 } }));
+        }
+        if (coverAuthor) {
+          children.push(new Paragraph({ text: `Author: ${coverAuthor}` }));
+        }
+        if (coverOrg) {
+          children.push(new Paragraph({ text: `Organization: ${coverOrg}` }));
+        }
+        children.push(new Paragraph({ text: `Date: ${new Date().toLocaleDateString()}`, spacing: { after: 2000 } }));
+        
+        // Page break
+        children.push(new Paragraph({ text: "", pageBreakBefore: true }));
       }
+
+      // Prepend main title
+      children.push(new Paragraph({ text: selectedGuide.title, heading: 'Heading1', spacing: { after: 400 } }));
+
+      for (let i = 0; i < selectedGuide.steps.length; i++) {
+        const step = selectedGuide.steps[i];
+        children.push(new Paragraph({ text: `Step ${i + 1}: ${step.action}`, heading: 'Heading2', spacing: { before: 400, after: 200 } }));
+        if (step.description) {
+          children.push(new Paragraph({ text: step.description, spacing: { after: 200 } }));
+        }
+        if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
+          try {
+            const stepColor = step.color || selectedGuide.defaultColor || 'red';
+            const annotated = await getAnnotatedDataUrl(
+              step, 
+              stepColor, 
+              selectedGuide.showTimestamp,
+              selectedGuide.timestampPosition,
+              selectedGuide.timestampStyle
+            );
+            if (annotated) {
+              const b64  = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+              const bin  = window.atob(b64);
+              const bytes = new Uint8Array(bin.length);
+              for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+              children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 500, height: 300 } })] }));
+            }
+          } catch (e) { console.error('Word image error:', e); }
+        }
+        setExportProgress({ current: i + 1, total: selectedGuide.steps.length, format: 'Word' });
+      }
+
+      const blob = await Packer.toBlob(new Document({ sections: [{ children }] }));
+      downloadFile(blob, `${sanitizeFilename(selectedGuide.title)}.docx`);
+    } catch (err) {
+      alert("Failed to export Word: " + err.message);
+    } finally {
+      setExportProgress(null);
     }
-    const blob = await Packer.toBlob(new Document({ sections: [{ children }] }));
-    downloadFile(blob, `${sanitizeFilename(selectedGuide.title)}.docx`); // BUG N
   };
 
   const exportJSON = async () => {
     if (!selectedGuide?.steps?.length) return;
+    setExportProgress({ current: 0, total: selectedGuide.steps.length, format: 'JSON' });
     
-    const standardizeStep = async (step, defaultColor, showTimestamp) => ({
-      id: step.id || "",
-      guideId: step.guideId || "",
-      action: step.action || "",
-      description: step.description || "",
-      stepType: step.stepType || "click",
-      elementData: step.elementData || null,
-      color: step.color || null,
-      timestamp: step.timestamp || new Date().toISOString(),
-      screenshotId: step.screenshotId || null,
-      screenshotDataUrl: (step.screenshot || step.screenshotId) 
-        ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red', showTimestamp) 
-        : null
-    });
+    try {
+      const standardizeStep = async (step, defaultColor, showTimestamp, timestampPosition, timestampStyle) => ({
+        id: step.id || "",
+        guideId: step.guideId || "",
+        action: step.action || "",
+        description: step.description || "",
+        stepType: step.stepType || "click",
+        elementData: step.elementData || null,
+        color: step.color || null,
+        timestamp: step.timestamp || new Date().toISOString(),
+        screenshotId: step.screenshotId || null,
+        screenshotDataUrl: (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) 
+          ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red', showTimestamp, timestampPosition, timestampStyle) 
+          : null
+      });
 
-    const exportData = {
-      exportType: "steply_bundle",
-      version: "1.0",
-      exportTitle: selectedGuide.title || "Untitled",
-      exportedAt: new Date().toISOString(),
-      guides: [
-        {
-          id: selectedGuide.id || "",
-          title: selectedGuide.title || "Untitled",
-          url: selectedGuide.url || "",
-          createdAt: selectedGuide.createdAt || new Date().toISOString(),
-          updatedAt: selectedGuide.updatedAt || new Date().toISOString(),
-          stepCount: selectedGuide.stepCount || 0,
-          defaultColor: selectedGuide.defaultColor || "red",
-          steps: await Promise.all(selectedGuide.steps.map(s => standardizeStep(s, selectedGuide.defaultColor, selectedGuide.showTimestamp)))
-        }
-      ]
-    };
+      const processedSteps = [];
+      for (let i = 0; i < selectedGuide.steps.length; i++) {
+        const s = selectedGuide.steps[i];
+        const processed = await standardizeStep(
+          s, 
+          selectedGuide.defaultColor, 
+          selectedGuide.showTimestamp,
+          selectedGuide.timestampPosition,
+          selectedGuide.timestampStyle
+        );
+        processedSteps.push(processed);
+        setExportProgress({ current: i + 1, total: selectedGuide.steps.length, format: 'JSON' });
+      }
 
-    const jsonString = JSON.stringify(exportData, null, 2);
-    downloadFile(
-      new Blob([jsonString], { type: 'application/json' }), 
-      `${sanitizeFilename(selectedGuide.title)}.json`
-    );
+      const exportData = {
+        exportType: "steply_bundle",
+        version: "1.0",
+        exportTitle: selectedGuide.title || "Untitled",
+        exportedAt: new Date().toISOString(),
+        guides: [
+          {
+            id: selectedGuide.id || "",
+            title: selectedGuide.title || "Untitled",
+            url: selectedGuide.url || "",
+            createdAt: selectedGuide.createdAt || new Date().toISOString(),
+            updatedAt: selectedGuide.updatedAt || new Date().toISOString(),
+            stepCount: selectedGuide.stepCount || 0,
+            defaultColor: selectedGuide.defaultColor || "red",
+            steps: processedSteps
+          }
+        ]
+      };
+
+      const jsonString = JSON.stringify(exportData, null, 2);
+      downloadFile(
+        new Blob([jsonString], { type: 'application/json' }), 
+        `${sanitizeFilename(selectedGuide.title)}.json`
+      );
+    } catch (err) {
+      alert("Failed to export JSON: " + err.message);
+    } finally {
+      setExportProgress(null);
+    }
   };
+
+  const exportHTML = async () => {
+    if (!selectedGuide?.steps?.length) return;
+    setExportProgress({ current: 0, total: selectedGuide.steps.length, format: 'HTML' });
+    
+    try {
+      let stepsHtml = '';
+      for (let i = 0; i < selectedGuide.steps.length; i++) {
+        const step = selectedGuide.steps[i];
+        const stepColor = step.color || selectedGuide.defaultColor || 'red';
+        const annotated = (step.stepType !== 'note' && (step.screenshot || step.screenshotId))
+          ? await getAnnotatedDataUrl(
+              step, 
+              stepColor, 
+              selectedGuide.showTimestamp,
+              selectedGuide.timestampPosition,
+              selectedGuide.timestampStyle
+            )
+          : null;
+          
+        stepsHtml += `
+          <div class="step-card">
+            <div class="step-header">
+              <div class="step-num">${i + 1}</div>
+              <h3 class="step-title">${escapeHtml(step.action)}</h3>
+            </div>
+            ${step.description ? `<div class="step-description">${escapeHtml(step.description)}</div>` : ''}
+            ${annotated ? `<div class="step-screenshot-wrap"><img src="${annotated}" alt="Step ${i+1} Screenshot" /></div>` : ''}
+          </div>
+        `;
+        setExportProgress({ current: i + 1, total: selectedGuide.steps.length, format: 'HTML' });
+      }
+      
+      let coverHtml = '';
+      if (includeCoverPage) {
+        coverHtml = `
+          <div class="cover-page">
+            ${coverLogo ? `<img src="${coverLogo}" class="cover-logo" alt="Logo" />` : ''}
+            <h1 class="cover-title">${escapeHtml(coverTitle || selectedGuide.title)}</h1>
+            ${coverSubtitle ? `<p class="cover-subtitle">${escapeHtml(coverSubtitle)}</p>` : ''}
+            <div class="cover-divider"></div>
+            <div class="cover-meta">
+              ${coverAuthor ? `<p><strong>Created by:</strong> ${escapeHtml(coverAuthor)}</p>` : ''}
+              ${coverOrg ? `<p><strong>Organization:</strong> ${escapeHtml(coverOrg)}</p>` : ''}
+              <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+            </div>
+          </div>
+          <div class="page-break"></div>
+        `;
+      }
+
+      const fullHtml = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(selectedGuide.title)}</title>
+  <style>
+    :root {
+      --primary-color: #185FA5;
+      --bg-color: #fafafa;
+      --card-bg: #ffffff;
+      --text-primary: #111827;
+      --text-secondary: #4b5563;
+      --border-color: #e5e7eb;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-primary);
+      margin: 0;
+      padding: 40px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container {
+      max-width: 680px;
+      width: 100%;
+    }
+    .cover-page {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 60px 40px;
+      margin-bottom: 40px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+      text-align: left;
+      position: relative;
+    }
+    .cover-logo {
+      max-height: 60px;
+      max-width: 160px;
+      margin-bottom: 40px;
+      display: block;
+    }
+    .cover-title {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--primary-color);
+      margin: 0 0 10px;
+      line-height: 1.2;
+    }
+    .cover-subtitle {
+      font-size: 18px;
+      color: var(--text-secondary);
+      margin: 0 0 30px;
+    }
+    .cover-divider {
+      height: 1px;
+      background: var(--border-color);
+      margin: 30px 0;
+    }
+    .cover-meta p {
+      margin: 6px 0;
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+    .guide-header {
+      margin-bottom: 30px;
+      text-align: center;
+    }
+    .guide-title {
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 0 0 6px;
+    }
+    .guide-meta {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin: 0;
+    }
+    .step-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+    .step-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .step-num {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--primary-color);
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .step-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin: 0;
+      color: var(--text-primary);
+    }
+    .step-description {
+      padding: 12px 20px;
+      font-size: 14px;
+      color: var(--text-secondary);
+      background: #f8fafc;
+      border-bottom: 1px solid var(--border-color);
+      line-height: 1.6;
+    }
+    .step-screenshot-wrap {
+      background: #0f1929;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .step-screenshot-wrap img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+    }
+    @media print {
+      body {
+        background: white;
+        padding: 0;
+      }
+      .container {
+        max-width: 100%;
+      }
+      .page-break {
+        page-break-after: always;
+      }
+      .step-card {
+        box-shadow: none;
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    ${coverHtml}
+    ${!includeCoverPage ? `
+    <div class="guide-header">
+      <h1 class="guide-title">${escapeHtml(selectedGuide.title)}</h1>
+      <p class="guide-meta">${selectedGuide.steps.length} steps · Created on ${new Date(selectedGuide.createdAt).toLocaleDateString()}</p>
+    </div>
+    ` : ''}
+    <div class="steps-list">
+      ${stepsHtml}
+    </div>
+  </div>
+</body>
+</html>
+      `;
+      downloadFile(new Blob([fullHtml], { type: 'text/html' }), `${sanitizeFilename(selectedGuide.title)}.html`);
+    } catch (err) {
+      alert("Failed to export HTML: " + err.message);
+    } finally {
+      setExportProgress(null);
+    }
+  };
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
 
   // ── Bulk Export Logic ──────────────────────────────────────────────────────
   const toggleBulkMode = () => {
@@ -978,134 +1698,344 @@ export default function Dashboard() {
     if (!selectedIds.length) return;
     setIsExportingBulk(true);
     
-    // Fetch all guides with full step data
-    const fullGuides = [];
-    for (const id of selectedIds) {
-      const res = await new Promise(r => chrome.runtime.sendMessage({ action: 'getGuide', guideId: id }, r));
-      if (res?.guide) fullGuides.push(res.guide);
-    }
-
-    if (format === 'json') {
-      const standardizeStep = async (step, defaultColor, showTimestamp) => ({
-        id: step.id || "",
-        guideId: step.guideId || "",
-        action: step.action || "",
-        description: step.description || "",
-        stepType: step.stepType || "click",
-        elementData: step.elementData || null,
-        color: step.color || null,
-        timestamp: step.timestamp || new Date().toISOString(),
-        screenshotId: step.screenshotId || null,
-        screenshotDataUrl: (step.screenshot || step.screenshotId) 
-          ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red', showTimestamp) 
-          : null
-      });
-
-      const exportData = {
-        exportType: "steply_bundle",
-        version: "1.0",
-        exportTitle: bulkTitle,
-        exportedAt: new Date().toISOString(),
-        guides: await Promise.all(fullGuides.map(async (g) => ({
-          id: g.id || "",
-          title: g.title || "Untitled",
-          url: g.url || "",
-          createdAt: g.createdAt || new Date().toISOString(),
-          updatedAt: g.updatedAt || new Date().toISOString(),
-          stepCount: g.stepCount || 0,
-          defaultColor: g.defaultColor || "red",
-          steps: await Promise.all(g.steps.map(s => standardizeStep(s, g.defaultColor, g.showTimestamp)))
-        })))
-      };
-
-      downloadFile(new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' }), `${sanitizeFilename(bulkTitle)}.json`);
-    } 
-    else if (format === 'md') {
-      let md = `# ${bulkTitle}\n\n*Exported on ${new Date().toLocaleDateString()}*\n\n`;
-      for (const g of fullGuides) {
-        md += `## Guide: ${g.title}\n\n`;
-        for (let i = 0; i < g.steps.length; i++) {
-          const step = g.steps[i];
-          md += `### Step ${i + 1}: ${step.action}\n`;
-          if (step.description) md += `\n> ${step.description}\n`;
-          if (step.screenshot || step.screenshotId) {
-            const stepColor = step.color || g.defaultColor || 'red';
-            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor, g.showTimestamp);
-            if (annotated) md += `\n![Screenshot](${annotated})\n`;
-          }
-          md += `\n`;
-        }
-        md += `\n---\n\n`;
+    try {
+      // Fetch all guides with full step data
+      const fullGuides = [];
+      for (const id of selectedIds) {
+        const res = await new Promise(r => chrome.runtime.sendMessage({ action: 'getGuide', guideId: id }, r));
+        if (res?.guide) fullGuides.push(res.guide);
       }
-      downloadFile(new Blob([md], { type: 'text/markdown' }), `${sanitizeFilename(bulkTitle)}.md`);
-    }
-    else if (format === 'pdf') {
-      const doc = new jsPDF();
-      doc.setFontSize(22); doc.text(bulkTitle, 10, 20);
-      doc.setFontSize(10); doc.setTextColor(150); doc.text(`Exported on ${new Date().toLocaleDateString()}`, 10, 28);
-      
-      let isFirstGuide = true;
-      for (const g of fullGuides) {
-        doc.addPage();
-        doc.setFontSize(20); doc.setTextColor(0);
-        doc.text(g.title, 10, 20);
-        let y = 40;
-        for (let i = 0; i < g.steps.length; i++) {
-          const step = g.steps[i];
-          if (y > 250) { doc.addPage(); y = 20; }
-          doc.setFontSize(14); doc.text(`Step ${i + 1}: ${step.action}`, 10, y); y += 8;
-          if (step.description) {
-            doc.setFontSize(11); doc.setTextColor(100);
-            const lines = doc.splitTextToSize(step.description, 180);
-            doc.text(lines, 10, y); y += lines.length * 6 + 4;
-            doc.setTextColor(0);
+
+      let totalSteps = fullGuides.reduce((acc, g) => acc + (g.steps?.length || 0), 0);
+      let currentStep = 0;
+      setExportProgress({ current: 0, total: totalSteps, format: format.toUpperCase() });
+
+      if (format === 'json') {
+        const standardizeStep = async (step, defaultColor, showTimestamp, timestampPosition, timestampStyle) => ({
+          id: step.id || "",
+          guideId: step.guideId || "",
+          action: step.action || "",
+          description: step.description || "",
+          stepType: step.stepType || "click",
+          elementData: step.elementData || null,
+          color: step.color || null,
+          timestamp: step.timestamp || new Date().toISOString(),
+          screenshotId: step.screenshotId || null,
+          screenshotDataUrl: (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) 
+            ? await getAnnotatedDataUrl(step, step.color || defaultColor || 'red', showTimestamp, timestampPosition, timestampStyle) 
+            : null
+        });
+
+        const exportGuides = [];
+        for (const g of fullGuides) {
+          const processedSteps = [];
+          for (const s of g.steps) {
+            const processed = await standardizeStep(s, g.defaultColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+            processedSteps.push(processed);
+            currentStep++;
+            setExportProgress({ current: currentStep, total: totalSteps, format: 'JSON' });
           }
-          y += 4;
-          if (step.screenshot || step.screenshotId) {
-            const stepColor = step.color || g.defaultColor || 'red';
-            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor, g.showTimestamp);
-            if (annotated) {
-              doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
-              y += 110;
-              if (y > 250) { doc.addPage(); y = 20; }
+          exportGuides.push({
+            id: g.id || "",
+            title: g.title || "Untitled",
+            url: g.url || "",
+            createdAt: g.createdAt || new Date().toISOString(),
+            updatedAt: g.updatedAt || new Date().toISOString(),
+            stepCount: g.stepCount || 0,
+            defaultColor: g.defaultColor || "red",
+            steps: processedSteps
+          });
+        }
+
+        const exportData = {
+          exportType: "steply_bundle",
+          version: "1.0",
+          exportTitle: bulkTitle,
+          exportedAt: new Date().toISOString(),
+          guides: exportGuides
+        };
+
+        downloadFile(new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' }), `${sanitizeFilename(bulkTitle)}.json`);
+      } 
+      else if (format === 'md') {
+        let md = `# ${bulkTitle}\n\n*Exported on ${new Date().toLocaleDateString()}*\n\n`;
+        for (const g of fullGuides) {
+          md += `## Guide: ${g.title}\n\n`;
+          for (let i = 0; i < g.steps.length; i++) {
+            const step = g.steps[i];
+            md += `### Step ${i + 1}: ${step.action}\n`;
+            if (step.description) md += `\n> ${step.description}\n`;
+            if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
+              const stepColor = step.color || g.defaultColor || 'red';
+              const annotated = await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+              if (annotated) md += `\n![Screenshot](${annotated})\n`;
             }
+            md += `\n`;
+            currentStep++;
+            setExportProgress({ current: currentStep, total: totalSteps, format: 'Markdown' });
           }
+          md += `\n---\n\n`;
         }
+        downloadFile(new Blob([md], { type: 'text/markdown' }), `${sanitizeFilename(bulkTitle)}.md`);
       }
-      doc.save(`${sanitizeFilename(bulkTitle)}.pdf`);
-    }
-    else if (format === 'word') {
-      const sections = [{
-        children: [
-          new Paragraph({ text: bulkTitle, heading: 'Title' }),
-          new Paragraph({ text: `Exported on ${new Date().toLocaleDateString()}` })
-        ]
-      }];
-      for (const g of fullGuides) {
-        const children = [new Paragraph({ text: g.title, heading: 'Heading1' })];
-        for (let i = 0; i < g.steps.length; i++) {
-          const step = g.steps[i];
-          children.push(new Paragraph({ text: `Step ${i + 1}: ${step.action}`, heading: 'Heading2' }));
-          if (step.description) children.push(new Paragraph({ text: step.description }));
-          if (step.screenshot || step.screenshotId) {
-            const stepColor = step.color || g.defaultColor || 'red';
-            const annotated = await getAnnotatedDataUrl(g.steps[i], stepColor, g.showTimestamp);
-            if (annotated) {
-              const b64 = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
-              const bin = window.atob(b64);
-              const bytes = new Uint8Array(bin.length);
-              for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
-              children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 500, height: 300 } })] }));
+      else if (format === 'pdf') {
+        const doc = new jsPDF();
+        doc.setFontSize(22); doc.text(bulkTitle, 10, 20);
+        doc.setFontSize(10); doc.setTextColor(150); doc.text(`Exported on ${new Date().toLocaleDateString()}`, 10, 28);
+        
+        for (const g of fullGuides) {
+          doc.addPage();
+          doc.setFontSize(20); doc.setTextColor(0);
+          doc.text(g.title, 10, 20);
+          let y = 40;
+          for (let i = 0; i < g.steps.length; i++) {
+            const step = g.steps[i];
+            if (y > 250) { doc.addPage(); y = 20; }
+            doc.setFontSize(14); doc.text(`Step ${i + 1}: ${step.action}`, 10, y); y += 8;
+            if (step.description) {
+              doc.setFontSize(11); doc.setTextColor(100);
+              const lines = doc.splitTextToSize(step.description, 180);
+              doc.text(lines, 10, y); y += lines.length * 6 + 4;
+              doc.setTextColor(0);
             }
+            y += 4;
+            if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
+              const stepColor = step.color || g.defaultColor || 'red';
+              const annotated = await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+              if (annotated) {
+                doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
+                y += 110;
+                if (y > 250) { doc.addPage(); y = 20; }
+              }
+            }
+            currentStep++;
+            setExportProgress({ current: currentStep, total: totalSteps, format: 'PDF' });
           }
         }
-        sections.push({ children });
+        doc.save(`${sanitizeFilename(bulkTitle)}.pdf`);
       }
-      const blob = await Packer.toBlob(new Document({ sections }));
-      downloadFile(blob, `${sanitizeFilename(bulkTitle)}.docx`);
-    }
+      else if (format === 'word') {
+        const sections = [{
+          children: [
+            new Paragraph({ text: bulkTitle, heading: 'Title' }),
+            new Paragraph({ text: `Exported on ${new Date().toLocaleDateString()}` })
+          ]
+        }];
+        for (const g of fullGuides) {
+          const children = [new Paragraph({ text: g.title, heading: 'Heading1' })];
+          for (let i = 0; i < g.steps.length; i++) {
+            const step = g.steps[i];
+            children.push(new Paragraph({ text: `Step ${i + 1}: ${step.action}`, heading: 'Heading2' }));
+            if (step.description) children.push(new Paragraph({ text: step.description }));
+            if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
+              const stepColor = step.color || g.defaultColor || 'red';
+              const annotated = await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+              if (annotated) {
+                const b64 = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+                const bin = window.atob(b64);
+                const bytes = new Uint8Array(bin.length);
+                for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+                children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 500, height: 300 } })] }));
+              }
+            }
+            currentStep++;
+            setExportProgress({ current: currentStep, total: totalSteps, format: 'Word' });
+          }
+          sections.push({ children });
+        }
+        const blob = await Packer.toBlob(new Document({ sections }));
+        downloadFile(blob, `${sanitizeFilename(bulkTitle)}.docx`);
+      }
+      else if (format === 'html') {
+        let guidesHtml = '';
+        for (const g of fullGuides) {
+          let stepsHtml = '';
+          for (let i = 0; i < g.steps.length; i++) {
+            const step = g.steps[i];
+            const stepColor = step.color || g.defaultColor || 'red';
+            const annotated = (step.stepType !== 'note' && (step.screenshot || step.screenshotId))
+              ? await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle)
+              : null;
+            
+            stepsHtml += `
+              <div class="step-card">
+                <div class="step-header">
+                  <div class="step-num">${i + 1}</div>
+                  <h3 class="step-title">${escapeHtml(step.action)}</h3>
+                </div>
+                ${step.description ? `<div class="step-description">${escapeHtml(step.description)}</div>` : ''}
+                ${annotated ? `<div class="step-screenshot-wrap"><img src="${annotated}" alt="Step ${i+1} Screenshot" /></div>` : ''}
+              </div>
+            `;
+            currentStep++;
+            setExportProgress({ current: currentStep, total: totalSteps, format: 'HTML' });
+          }
+          
+          guidesHtml += `
+            <div class="guide-section">
+              <h2 class="guide-title">${escapeHtml(g.title)}</h2>
+              <p class="guide-meta">${g.steps.length} steps · Created on ${new Date(g.createdAt).toLocaleDateString()}</p>
+              <div class="steps-list">
+                ${stepsHtml}
+              </div>
+            </div>
+            <div class="page-break"></div>
+          `;
+        }
 
-    setIsExportingBulk(false);
+        const fullHtml = `
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(bulkTitle)}</title>
+    <style>
+      :root {
+        --primary-color: #185FA5;
+        --bg-color: #fafafa;
+        --card-bg: #ffffff;
+        --text-primary: #111827;
+        --text-secondary: #4b5563;
+        --border-color: #e5e7eb;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background-color: var(--bg-color);
+        color: var(--text-primary);
+        margin: 0;
+        padding: 40px 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .container {
+        max-width: 680px;
+        width: 100%;
+      }
+      .bulk-header-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 40px;
+        margin-bottom: 40px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+      }
+      .bulk-title {
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--primary-color);
+        margin: 0 0 10px;
+      }
+      .bulk-meta {
+        font-size: 14px;
+        color: var(--text-secondary);
+        margin: 0;
+      }
+      .guide-section {
+        margin-bottom: 60px;
+      }
+      .guide-title {
+        font-size: 22px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0 0 6px;
+      }
+      .guide-meta {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin: 0 0 24px;
+      }
+      .step-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        overflow: hidden;
+        margin-bottom: 24px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+      }
+      .step-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border-color);
+      }
+      .step-num {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--primary-color);
+        color: white;
+        font-size: 13px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .step-title {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0;
+        color: var(--text-primary);
+      }
+      .step-description {
+        padding: 12px 20px;
+        font-size: 14px;
+        color: var(--text-secondary);
+        background: #f8fafc;
+        border-bottom: 1px solid var(--border-color);
+        line-height: 1.6;
+      }
+      .step-screenshot-wrap {
+        background: #0f1929;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      .step-screenshot-wrap img {
+        max-width: 100%;
+        height: auto;
+        display: block;
+      }
+      @media print {
+        body {
+          background: white;
+          padding: 0;
+        }
+        .container {
+          max-width: 100%;
+        }
+        .page-break {
+          page-break-after: always;
+        }
+        .step-card {
+          box-shadow: none;
+          page-break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="bulk-header-card">
+        <h1 class="bulk-title">${escapeHtml(bulkTitle)}</h1>
+        <p class="bulk-meta">Combined export of ${fullGuides.length} guides · Exported on ${new Date().toLocaleDateString()}</p>
+      </div>
+      ${guidesHtml}
+    </div>
+  </body>
+  </html>
+        `;
+        downloadFile(new Blob([fullHtml], { type: 'text/html' }), `${sanitizeFilename(bulkTitle)}.html`);
+      }
+    } catch (err) {
+      alert("Failed to export: " + err.message);
+    } finally {
+      setIsExportingBulk(false);
+      setExportProgress(null);
+    }
   };
 
   const BulkExportView = () => {
@@ -1397,34 +2327,11 @@ export default function Dashboard() {
                     Rename
                   </button>
                   
-                  {/* Export Dropdown */}
-                  <div 
-                    className="export-dropdown-wrap"
-                    onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setExportOpen(false); }}
-                    tabIndex={-1}
-                  >
-                    <button className="btn-secondary" onClick={() => setExportOpen(!exportOpen)}>
-                      <i className="ti ti-download" style={{ fontSize: '13px' }}></i>
-                      Export
-                      <i className={`ti ti-chevron-${exportOpen ? 'up' : 'down'}`} style={{ fontSize: '12px', marginLeft: '2px' }}></i>
-                    </button>
-                    {exportOpen && (
-                      <div className="export-dropdown-menu">
-                        <button className="export-dropdown-item" onClick={() => { exportPDF(); setExportOpen(false); }}>
-                          <i className="ti ti-file-type-pdf" style={{ fontSize: '15px' }}></i> Export PDF
-                        </button>
-                        <button className="export-dropdown-item" onClick={() => { exportMarkdown(); setExportOpen(false); }}>
-                          <i className="ti ti-markdown" style={{ fontSize: '15px' }}></i> Export Markdown
-                        </button>
-                        <button className="export-dropdown-item" onClick={() => { exportWord(); setExportOpen(false); }}>
-                          <i className="ti ti-file-type-doc" style={{ fontSize: '15px' }}></i> Export Word
-                        </button>
-                        <button className="export-dropdown-item" onClick={() => { exportJSON(); setExportOpen(false); }}>
-                          <i className="ti ti-code" style={{ fontSize: '15px' }}></i> Export JSON
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  {/* Export Trigger */}
+                  <button className="btn-secondary" onClick={() => setExportModalOpen(true)}>
+                    <i className="ti ti-download" style={{ fontSize: '13px' }}></i>
+                    Export
+                  </button>
 
                   {/* ── Trinity Toggle (Guide Level) ── */}
                   <div className="trinity-toggle" title="Guide default highlight">
@@ -1458,7 +2365,7 @@ export default function Dashboard() {
                   <div className="trinity-toggle" title="Show timestamps on screenshots">
                     <button
                       className={`trinity-btn ${selectedGuide?.showTimestamp ? 'active-none' : ''}`}
-                      onClick={() => updateGuideTimestamp(true)}
+                      onClick={() => updateTimestampOptions({ showTimestamp: true })}
                       title="Show timestamps"
                     >
                       <i className="ti ti-clock" style={{ fontSize: '12px', color: selectedGuide?.showTimestamp ? '#185FA5' : 'inherit' }} />
@@ -1466,13 +2373,42 @@ export default function Dashboard() {
                     </button>
                     <button
                       className={`trinity-btn ${!selectedGuide?.showTimestamp ? 'active-none' : ''}`}
-                      onClick={() => updateGuideTimestamp(false)}
+                      onClick={() => updateTimestampOptions({ showTimestamp: false })}
                       title="Hide timestamps"
                     >
                       <i className="ti ti-clock-off" style={{ fontSize: '12px' }} />
                       Time: No
                     </button>
                   </div>
+
+                  {selectedGuide?.showTimestamp && (
+                    <>
+                      {/* Position Select */}
+                      <select
+                        className="timestamp-select"
+                        value={selectedGuide.timestampPosition || 'bottom_right'}
+                        onChange={(e) => updateTimestampOptions({ timestampPosition: e.target.value })}
+                        title="Timestamp Position"
+                      >
+                        <option value="top_left">Top Left</option>
+                        <option value="top_right">Top Right</option>
+                        <option value="bottom_left">Bottom Left</option>
+                        <option value="bottom_right">Bottom Right</option>
+                      </select>
+
+                      {/* Style Select */}
+                      <select
+                        className="timestamp-select"
+                        value={selectedGuide.timestampStyle || 'dark'}
+                        onChange={(e) => updateTimestampOptions({ timestampStyle: e.target.value })}
+                        title="Timestamp Style"
+                      >
+                        <option value="dark">Modern Dark</option>
+                        <option value="digital_orange">Digital Orange</option>
+                        <option value="watermark">Watermark Outline</option>
+                      </select>
+                    </>
+                  )}
 
                   <button 
                     className={isRecording && activeGuideId === selectedGuide.id ? "btn-recording-active" : "btn-primary"} 
@@ -1492,18 +2428,47 @@ export default function Dashboard() {
             {/* Timeline Area */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {selectedGuide.steps?.map((step, index) => (
-                <StepCard 
-                  key={`${step.id}-${step._refresh || ''}`} 
-                  step={step} 
-                  index={index} 
-                  updateStepText={updateStepText} 
-                  updateStepDescription={updateStepDescription} 
-                  deleteStep={deleteStep}
-                  updateStepColor={updateStepColor}
-                  guideColor={guideColor}
-                  showTimestamp={selectedGuide?.showTimestamp}
-                  onRedact={setRedactingStep}
-                />
+                <React.Fragment key={`${step.id}-${step._refresh || ''}`}>
+                  {index === 0 && (
+                    <div className="insert-divider-container">
+                      <button 
+                        className="insert-divider-btn" 
+                        onClick={() => handleInsertBlankStep(0)}
+                        title="Insert blank note step here"
+                      >
+                        <i className="ti ti-plus"></i>
+                        <span>Insert Note Card</span>
+                      </button>
+                    </div>
+                  )}
+                  <StepCard 
+                    step={step} 
+                    index={index} 
+                    updateStepText={updateStepText} 
+                    updateStepDescription={updateStepDescription} 
+                    deleteStep={deleteStep}
+                    updateStepColor={updateStepColor}
+                    guideColor={guideColor}
+                    showTimestamp={selectedGuide?.showTimestamp}
+                    timestampPosition={selectedGuide?.timestampPosition}
+                    timestampStyle={selectedGuide?.timestampStyle}
+                    onRedact={setRedactingStep}
+                    duplicateStep={duplicateStep}
+                    draggingIndex={draggingIndex}
+                    setDraggingIndex={setDraggingIndex}
+                    handleReorderSteps={handleReorderSteps}
+                  />
+                  <div className="insert-divider-container">
+                    <button 
+                      className="insert-divider-btn" 
+                      onClick={() => handleInsertBlankStep(index + 1)}
+                      title="Insert blank note step here"
+                    >
+                      <i className="ti ti-plus"></i>
+                      <span>Insert Note Card</span>
+                    </button>
+                  </div>
+                </React.Fragment>
               ))}
 
               {/* Add Step Button */}
@@ -1541,6 +2506,196 @@ export default function Dashboard() {
           onCancel={() => setRedactingStep(null)}
           onSave={handleSaveRedaction}
         />
+      )}
+
+      {/* ─── EXPORT OPTIONS MODAL (Root Level) ─── */}
+      {exportModalOpen && selectedGuide && (
+        <div className="export-modal-overlay" onClick={() => setExportModalOpen(false)}>
+          <div className="export-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="export-modal-header">
+              <h3>Export Options</h3>
+              <button className="btn-close-modal" onClick={() => setExportModalOpen(false)}>
+                <i className="ti ti-x"></i>
+              </button>
+            </div>
+            
+            <div className="export-modal-body">
+              {/* Cover Page Options */}
+              <div className="export-modal-section">
+                <div 
+                  className="export-modal-toggle-row"
+                  onClick={() => setIncludeCoverPage(!includeCoverPage)}
+                >
+                  <div className="toggle-row-info">
+                    <h4>Include Cover Page</h4>
+                    <p>Prepend a beautiful title slide to PDF/Word/HTML exports</p>
+                  </div>
+                  <input 
+                    type="checkbox" 
+                    className="switch-input"
+                    checked={includeCoverPage}
+                    onChange={(e) => setIncludeCoverPage(e.target.checked)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
+                
+                {includeCoverPage && (
+                  <div className="export-modal-grid">
+                    <div className="export-modal-input-group">
+                      <label>Title</label>
+                      <input 
+                        type="text" 
+                        className="export-modal-input" 
+                        value={coverTitle} 
+                        onChange={(e) => setCoverTitle(e.target.value)} 
+                        placeholder="Guide Title"
+                      />
+                    </div>
+                    <div className="export-modal-input-group">
+                      <label>Subtitle</label>
+                      <input 
+                        type="text" 
+                        className="export-modal-input" 
+                        value={coverSubtitle} 
+                        onChange={(e) => setCoverSubtitle(e.target.value)} 
+                        placeholder="Step-by-step Guide"
+                      />
+                    </div>
+                    <div className="export-modal-input-group">
+                      <label>Author</label>
+                      <input 
+                        type="text" 
+                        className="export-modal-input" 
+                        value={coverAuthor} 
+                        onChange={(e) => setCoverAuthor(e.target.value)} 
+                        placeholder="Your Name"
+                      />
+                    </div>
+                    <div className="export-modal-input-group">
+                      <label>Company / Organization Name</label>
+                      <input 
+                        type="text" 
+                        className="export-modal-input" 
+                        value={coverOrg} 
+                        onChange={(e) => setCoverOrg(e.target.value)} 
+                        placeholder="Company Name"
+                      />
+                    </div>
+                    <div className="export-modal-input-group">
+                      <label>Company Logo</label>
+                      <div className="logo-upload-zone">
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={(e) => {
+                            const file = e.target.files[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onloadend = () => {
+                                setCoverLogo(reader.result);
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }} 
+                          style={{ display: 'none' }}
+                          id="cover-logo-file"
+                        />
+                        <label htmlFor="cover-logo-file" className="logo-upload-label">
+                          {coverLogo ? (
+                            <div className="logo-preview-wrap">
+                              <img src={coverLogo} alt="Logo preview" className="logo-preview-img" />
+                              <button type="button" className="logo-remove-btn" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCoverLogo(null); }}>Remove Logo</button>
+                            </div>
+                          ) : (
+                            <div className="logo-upload-placeholder">
+                              <i className="ti ti-photo" style={{ fontSize: '20px', color: '#185FA5' }}></i>
+                              <span>Upload Company Logo</span>
+                            </div>
+                          )}
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              {/* Choose Format */}
+              <div className="export-modal-section">
+                <span className="export-modal-section-title">Select Format to Download</span>
+                <div className="export-format-grid">
+                  <div className="export-format-card" onClick={() => { exportPDF(); setExportModalOpen(false); }}>
+                    <div className="export-format-icon pdf">
+                      <i className="ti ti-file-type-pdf"></i>
+                    </div>
+                    <div className="export-format-info">
+                      <h4>PDF Document</h4>
+                      <p>For printing and sharing</p>
+                    </div>
+                  </div>
+                  
+                  <div className="export-format-card" onClick={() => { exportWord(); setExportModalOpen(false); }}>
+                    <div className="export-format-icon word">
+                      <i className="ti ti-file-type-doc"></i>
+                    </div>
+                    <div className="export-format-info">
+                      <h4>Word Document</h4>
+                      <p>Editable Docx file</p>
+                    </div>
+                  </div>
+                  
+                  <div className="export-format-card" onClick={() => { exportHTML(); setExportModalOpen(false); }}>
+                    <div className="export-format-icon html">
+                      <i className="ti ti-code"></i>
+                    </div>
+                    <div className="export-format-info">
+                      <h4>HTML Standalone</h4>
+                      <p>Interactive web page</p>
+                    </div>
+                  </div>
+                  
+                  <div className="export-format-card" onClick={() => { exportMarkdown(); setExportModalOpen(false); }}>
+                    <div className="export-format-icon markdown">
+                      <i className="ti ti-markdown"></i>
+                    </div>
+                    <div className="export-format-info">
+                      <h4>Markdown File</h4>
+                      <p>For dev wikis and blogs</p>
+                    </div>
+                  </div>
+                  
+                  <div style={{ gridColumn: 'span 2' }} className="export-format-card" onClick={() => { exportJSON(); setExportModalOpen(false); }}>
+                    <div className="export-format-icon json">
+                      <i className="ti ti-braces"></i>
+                    </div>
+                    <div className="export-format-info">
+                      <h4>JSON Bundle</h4>
+                      <p>Steply raw database backup</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* ─── EXPORT PROGRESS CARD OVERLAY (Root Level) ─── */}
+      {exportProgress && (
+        <div className="export-progress-overlay">
+          <div className="export-progress-card">
+            <div className="spinner rotate">
+              <i className="ti ti-loader" style={{ fontSize: '24px', color: '#185FA5' }}></i>
+            </div>
+            <p className="progress-text">Exporting to {exportProgress.format}...</p>
+            <div className="progress-bar-bg">
+              <div 
+                className="progress-bar-fill" 
+                style={{ width: `${(exportProgress.current / exportProgress.total) * 100}%` }}
+              ></div>
+            </div>
+            <p className="progress-detail">Processing step {exportProgress.current} of {exportProgress.total}</p>
+          </div>
+        </div>
       )}
     </div>
   );

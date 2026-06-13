@@ -1,12 +1,116 @@
 console.log("[Steply] Content script loaded successfully on:", window.location.href);
 
 let isRecording = false;
+let activeGuideId = null;
+let currentStepCount = 0;
+let hudElement = null;
+let isHudClosedSession = false;
 
-// BUG 10: ensure isRecording stays in sync with storage across reloads/restarts
+// SCOPED HUD STYLES
+const hudStyle = document.createElement('style');
+hudStyle.textContent = `
+  @keyframes steply-pulse {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  }
+  .steply-hud {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 2147483647;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 99px;
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #1f2937;
+    user-select: none;
+    transition: opacity 0.2s ease;
+  }
+  .steply-hud-drag-handle {
+    display: flex;
+    align-items: center;
+    cursor: grab;
+    padding: 2px;
+  }
+  .steply-hud-pulse {
+    width: 8px;
+    height: 8px;
+    background: #ef4444;
+    border-radius: 50%;
+    animation: steply-pulse 1.5s infinite;
+    flex-shrink: 0;
+  }
+  .steply-hud-text {
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .steply-hud-divider {
+    width: 1px;
+    height: 16px;
+    background: #e5e7eb;
+  }
+  .steply-hud-btn {
+    border: none;
+    background: none;
+    cursor: pointer;
+    padding: 5px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+    color: #6b7280;
+  }
+  .steply-hud-btn:hover {
+    background: #f3f4f6;
+    color: #111827;
+  }
+  .steply-hud-btn.btn-stop:hover {
+    background: #fef2f2;
+    color: #ef4444;
+  }
+  .steply-hud-btn.btn-cancel:hover {
+    background: #fef2f2;
+    color: #dc2626;
+  }
+  .steply-toast {
+    position: fixed;
+    z-index: 2147483647;
+    background: #10b981;
+    color: #ffffff;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transform: translateY(10px);
+    opacity: 0;
+    transition: all 0.2s ease-out;
+    pointer-events: none;
+  }
+  .steply-toast.show {
+    transform: translateY(0);
+    opacity: 1;
+  }
+`;
+document.head.appendChild(hudStyle);
+
 function syncRecordingState() {
-  chrome.storage.local.get(['isRecording'], (res) => {
-    isRecording = !!res.isRecording;
-    console.log("[Steply] Recording state synced from storage:", isRecording);
+  chrome.runtime.sendMessage({ action: 'getRecordingStatus' }, (res) => {
+    if (res) {
+      isRecording = !!res.isRecording;
+      activeGuideId = res.guideId;
+      currentStepCount = res.stepCount || 0;
+      updateHUD();
+    }
   });
 }
 
@@ -16,7 +120,10 @@ syncRecordingState();
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.isRecording) {
     isRecording = changes.isRecording.newValue;
-    console.log("[Steply] Recording state changed in storage:", isRecording);
+    if (!isRecording) {
+      isHudClosedSession = false;
+    }
+    syncRecordingState();
   }
 });
 
@@ -24,16 +131,176 @@ chrome.storage.onChanged.addListener((changes) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startRecording') {
     isRecording = true;
+    isHudClosedSession = false;
     lastScrollY = window.scrollY;
     lastScrollX = window.scrollX;
-    console.log("[Steply] Received startRecording event.");
+    syncRecordingState();
     sendResponse({ status: 'started' });
   } else if (request.action === 'stopRecording') {
     isRecording = false;
-    console.log("[Steply] Received stopRecording event.");
+    isHudClosedSession = false;
+    updateHUD();
     sendResponse({ status: 'stopped' });
   }
 });
+
+function updateHUD() {
+  if (isRecording && !isHudClosedSession) {
+    if (!hudElement) {
+      createHUD();
+    }
+    const textNode = hudElement.querySelector('.steply-hud-text');
+    if (textNode) {
+      textNode.textContent = `Recording... (${currentStepCount} step${currentStepCount === 1 ? '' : 's'})`;
+    }
+  } else {
+    if (hudElement) {
+      hudElement.remove();
+      hudElement = null;
+    }
+  }
+}
+
+function createHUD() {
+  hudElement = document.createElement('div');
+  hudElement.className = 'steply-hud';
+  hudElement.innerHTML = `
+    <div class="steply-hud-drag-handle" title="Drag to reposition">
+      <svg width="12" height="18" viewBox="0 0 12 18" fill="none" stroke="#9ca3af" stroke-width="2" stroke-linecap="round"><circle cx="2.5" cy="3" r="1"/><circle cx="2.5" cy="9" r="1"/><circle cx="2.5" cy="15" r="1"/><circle cx="9.5" cy="3" r="1"/><circle cx="9.5" cy="9" r="1"/><circle cx="9.5" cy="15" r="1"/></svg>
+    </div>
+    <div class="steply-hud-pulse"></div>
+    <span class="steply-hud-text">Recording... (0 steps)</span>
+    <div class="steply-hud-divider"></div>
+    <button class="steply-hud-btn btn-stop" title="Stop & Save Recording">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+    </button>
+    <button class="steply-hud-btn btn-cancel" title="Cancel & Delete Recording">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+    </button>
+    <button class="steply-hud-btn btn-close" title="Hide HUD (keeps recording)">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  `;
+
+  // Restore position if saved
+  const savedLeft = sessionStorage.getItem('steply_hud_left');
+  const savedTop = sessionStorage.getItem('steply_hud_top');
+  if (savedLeft && savedTop) {
+    hudElement.style.left = savedLeft;
+    hudElement.style.top = savedTop;
+  } else {
+    hudElement.style.right = '20px';
+    hudElement.style.bottom = '20px';
+  }
+
+  // Button actions
+  hudElement.querySelector('.btn-stop').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'stopRecording' });
+  });
+
+  hudElement.querySelector('.btn-cancel').addEventListener('click', () => {
+    if (confirm('Cancel and delete this recording?')) {
+      chrome.runtime.sendMessage({ action: 'stopRecording' }, () => {
+        if (activeGuideId) {
+          chrome.runtime.sendMessage({ action: 'deleteGuide', guideId: activeGuideId });
+        }
+      });
+    }
+  });
+
+  hudElement.querySelector('.btn-close').addEventListener('click', () => {
+    isHudClosedSession = true;
+    updateHUD();
+  });
+
+  // Drag and drop implementation
+  let isDragging = false;
+  let startX = 0, startY = 0;
+  let initialLeft = 0, initialTop = 0;
+  const dragHandle = hudElement.querySelector('.steply-hud-drag-handle');
+
+  dragHandle.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    dragHandle.style.cursor = 'grabbing';
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = hudElement.getBoundingClientRect();
+    initialLeft = rect.left;
+    initialTop = rect.top;
+    
+    hudElement.style.bottom = 'auto';
+    hudElement.style.right = 'auto';
+    hudElement.style.left = initialLeft + 'px';
+    hudElement.style.top = initialTop + 'px';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    let left = initialLeft + dx;
+    let top = initialTop + dy;
+    
+    const maxLeft = window.innerWidth - hudElement.offsetWidth - 10;
+    const maxTop = window.innerHeight - hudElement.offsetHeight - 10;
+    left = Math.max(10, Math.min(left, maxLeft));
+    top = Math.max(10, Math.min(top, maxTop));
+    
+    hudElement.style.left = left + 'px';
+    hudElement.style.top = top + 'px';
+    
+    sessionStorage.setItem('steply_hud_left', left + 'px');
+    sessionStorage.setItem('steply_hud_top', top + 'px');
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (isDragging) {
+      isDragging = false;
+      dragHandle.style.cursor = 'grab';
+    }
+  });
+
+  document.body.appendChild(hudElement);
+}
+
+function showToast(messageText) {
+  let toast = document.getElementById('steply-toast-element');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'steply-toast-element';
+    toast.className = 'steply-toast';
+    document.body.appendChild(toast);
+  }
+  
+  toast.textContent = messageText;
+  
+  if (hudElement) {
+    const hudRect = hudElement.getBoundingClientRect();
+    toast.style.bottom = 'auto';
+    toast.style.right = 'auto';
+    // Offset toast dynamic position above HUD
+    toast.style.left = Math.max(10, hudRect.right - 220) + 'px';
+    toast.style.top = Math.max(10, hudRect.top - 46) + 'px';
+  } else {
+    toast.style.bottom = '20px';
+    toast.style.right = '20px';
+    toast.style.top = 'auto';
+    toast.style.left = 'auto';
+  }
+  
+  // Reset opacity/display state classes
+  toast.classList.remove('show');
+  void toast.offsetWidth; // trigger reflow
+  toast.classList.add('show');
+  
+  // Clear any existing timeout
+  if (window.steplyToastTimeout) clearTimeout(window.steplyToastTimeout);
+  window.steplyToastTimeout = setTimeout(() => {
+    toast.classList.remove('show');
+  }, 2200);
+}
+
 
 // Helper: generate unique CSS selector
 function getCSSSelector(el) {
@@ -207,11 +474,16 @@ document.addEventListener('click', (event) => {
   // This prevents losing the step if the page navigates away instantly (e.g. clicking a link)
   try {
     console.log("[Steply] Sending click step details to background script:", selector);
-    chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
+    chrome.runtime.sendMessage({ action: 'processStep', step }, (res) => {
       if (chrome.runtime.lastError) {
         console.warn("[Steply] Failed to send step (likely due to immediate page navigation):", chrome.runtime.lastError.message);
-      } else {
+      } else if (res && res.success) {
         console.log("[Steply] Step successfully saved in background!");
+        if (res.stepCount !== undefined) {
+          currentStepCount = res.stepCount;
+          updateHUD();
+        }
+        showToast(`Step ${currentStepCount} captured: Clicked ${step.action}`);
       }
     });
   } catch (err) {
@@ -302,8 +574,15 @@ window.addEventListener('scroll', (event) => {
     };
 
     try {
-      chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
+      chrome.runtime.sendMessage({ action: 'processStep', step }, (res) => {
         if (!chrome.runtime.lastError) {
+          if (res && res.success) {
+            if (res.stepCount !== undefined) {
+              currentStepCount = res.stepCount;
+              updateHUD();
+            }
+            showToast(`Step ${currentStepCount} captured: Scrolled page`);
+          }
           if (isWindow) {
             lastScrollY = capturedY;
             lastScrollX = capturedX;
@@ -406,9 +685,15 @@ document.addEventListener('blur', (event) => {
     stepType: 'input'
   };
 
-  chrome.runtime.sendMessage({ action: 'processStep', step }, () => {
+  chrome.runtime.sendMessage({ action: 'processStep', step }, (res) => {
     if (chrome.runtime.lastError) {
       // input step could not be sent
+    } else if (res && res.success) {
+      if (res.stepCount !== undefined) {
+        currentStepCount = res.stepCount;
+        updateHUD();
+      }
+      showToast(`Step ${currentStepCount} captured: Input text`);
     }
   });
 
