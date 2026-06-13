@@ -20,8 +20,6 @@ hudStyle.textContent = `
   .steply-hud {
     all: initial !important;
     position: fixed !important;
-    bottom: 20px !important;
-    right: 20px !important;
     z-index: 2147483647 !important;
     background: #ffffff !important;
     border: 1px solid #e5e7eb !important;
@@ -314,11 +312,15 @@ function createHUD() {
   const savedLeft = sessionStorage.getItem('steply_hud_left');
   const savedTop = sessionStorage.getItem('steply_hud_top');
   if (savedLeft && savedTop) {
+    hudElement.style.bottom = 'auto';
+    hudElement.style.right = 'auto';
     hudElement.style.left = savedLeft;
     hudElement.style.top = savedTop;
   } else {
-    hudElement.style.right = '20px';
     hudElement.style.bottom = '20px';
+    hudElement.style.right = '20px';
+    hudElement.style.left = 'auto';
+    hudElement.style.top = 'auto';
   }
 
   // Button actions
@@ -540,8 +542,11 @@ document.addEventListener('click', (event) => {
   
   if (!(target instanceof Element)) return;
 
-  // Ignore events that occur on HUD itself or Toast elements
-  if (target.closest('.steply-hud') || target.closest('.steply-toast')) {
+  // Ignore events that occur on HUD itself or Toast elements. 
+  // We use composedPath checking which is immune to DOM elements being detached during events.
+  const isInsideHUD = path && path.some(el => el instanceof Element && (el.classList.contains('steply-hud') || el.classList.contains('steply-toast')));
+  if (isInsideHUD) {
+    console.log("[Steply] Ignored click inside HUD or toast");
     return;
   }
 
@@ -645,7 +650,9 @@ window.addEventListener('scroll', (event) => {
   // Identify the actual scroll target (window or specific element)
   const target = (event.target === document || event.target === window) ? window : event.target;
   
-  if (target instanceof Element && (target.closest('.steply-hud') || target.closest('.steply-toast'))) {
+  const path = event.composedPath && event.composedPath();
+  const isInsideHUD = path && path.some(el => el instanceof Element && (el.classList.contains('steply-hud') || el.classList.contains('steply-toast')));
+  if (isInsideHUD) {
     return;
   }
 
@@ -779,7 +786,8 @@ document.addEventListener('blur', (event) => {
   const target = (path && path.length > 0) ? path[0] : event.target;
   if (!(target instanceof Element)) return;
 
-  if (target.closest('.steply-hud') || target.closest('.steply-toast')) {
+  const isInsideHUD = path && path.some(el => el instanceof Element && (el.classList.contains('steply-hud') || el.classList.contains('steply-toast')));
+  if (isInsideHUD) {
     return;
   }
 
