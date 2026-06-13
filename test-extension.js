@@ -40,6 +40,9 @@ const path = require('path');
 
   const page = await browser.newPage();
   
+  page.on('console', msg => console.log('PAGE LOG:', msg.text()));
+  page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
+
   // 1. Open a test page
   await page.goto('https://example.com', { waitUntil: 'networkidle0' });
   console.log('Navigated to example.com');

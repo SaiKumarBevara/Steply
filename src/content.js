@@ -5,6 +5,8 @@ let activeGuideId = null;
 let currentStepCount = 0;
 let hudElement = null;
 let isHudClosedSession = false;
+let lastScrollY = window.scrollY;
+let lastScrollX = window.scrollX;
 
 // SCOPED HUD STYLES
 const hudStyle = document.createElement('style');
@@ -101,7 +103,25 @@ hudStyle.textContent = `
     opacity: 1;
   }
 `;
-document.head.appendChild(hudStyle);
+if (document.head) {
+  document.head.appendChild(hudStyle);
+} else {
+  document.documentElement.appendChild(hudStyle);
+}
+
+function safeAppendToBody(el) {
+  if (document.body) {
+    document.body.appendChild(el);
+  } else {
+    const observer = new MutationObserver((mutations, obs) => {
+      if (document.body) {
+        document.body.appendChild(el);
+        obs.disconnect();
+      }
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  }
+}
 
 function syncRecordingState() {
   chrome.runtime.sendMessage({ action: 'getRecordingStatus' }, (res) => {
@@ -261,7 +281,7 @@ function createHUD() {
     }
   });
 
-  document.body.appendChild(hudElement);
+  safeAppendToBody(hudElement);
 }
 
 function showToast(messageText) {
@@ -270,7 +290,7 @@ function showToast(messageText) {
     toast = document.createElement('div');
     toast.id = 'steply-toast-element';
     toast.className = 'steply-toast';
-    document.body.appendChild(toast);
+    safeAppendToBody(toast);
   }
   
   toast.textContent = messageText;
@@ -493,8 +513,6 @@ document.addEventListener('click', (event) => {
 }, true); // use capture phase
 
 // ─── Scroll Tracking ─────────────────────────────────────────────────────────
-let lastScrollY = window.scrollY;
-let lastScrollX = window.scrollX;
 const elementBaselines = new Map(); // tracking for overflow elements
 let scrollTimer = null;
 const SCROLL_DEBOUNCE_MS = 500;  // more responsive
