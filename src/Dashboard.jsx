@@ -699,6 +699,7 @@ export default function Dashboard() {
   const [coverAuthor, setCoverAuthor] = useState('');
   const [coverOrg, setCoverOrg] = useState('');
   const [coverLogo, setCoverLogo] = useState(null);
+  const [showTimestampPopover, setShowTimestampPopover] = useState(false);
   
   // ── Bulk Export State ──────────────────────────────────────────────────
   const [bulkMode, setBulkMode]             = useState(false);
@@ -2386,32 +2387,93 @@ export default function Dashboard() {
                   </div>
 
                   {selectedGuide?.showTimestamp && (
-                    <>
-                      {/* Position Select */}
-                      <select
-                        className="timestamp-select"
-                        value={selectedGuide.timestampPosition || 'bottom_right'}
-                        onChange={(e) => updateTimestampOptions({ timestampPosition: e.target.value })}
-                        title="Timestamp Position"
+                    <div style={{ position: 'relative', display: 'inline-block' }}>
+                      <button
+                        className={`timestamp-settings-trigger ${showTimestampPopover ? 'active' : ''}`}
+                        onClick={() => setShowTimestampPopover(!showTimestampPopover)}
+                        title="Customize timestamp font, style, and position"
                       >
-                        <option value="top_left">Top Left</option>
-                        <option value="top_right">Top Right</option>
-                        <option value="bottom_left">Bottom Left</option>
-                        <option value="bottom_right">Bottom Right</option>
-                      </select>
+                        <i className="ti ti-settings" style={{ fontSize: '13px' }} />
+                      </button>
+                      {showTimestampPopover && (
+                        <div className="timestamp-popover">
+                          <div className="timestamp-popover-header">
+                            <span>Customize Timestamp</span>
+                            <button className="timestamp-popover-close" onClick={() => setShowTimestampPopover(false)}>&times;</button>
+                          </div>
+                          
+                          <div className="timestamp-popover-section">
+                            <label>Placement Position</label>
+                            <div className="timestamp-position-grid">
+                              <button 
+                                className={`pos-grid-cell ${selectedGuide.timestampPosition === 'top_left' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampPosition: 'top_left' })}
+                                title="Top Left"
+                              >
+                                <span className="pos-dot top-left" />
+                              </button>
+                              <button 
+                                className={`pos-grid-cell ${selectedGuide.timestampPosition === 'top_right' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampPosition: 'top_right' })}
+                                title="Top Right"
+                              >
+                                <span className="pos-dot top-right" />
+                              </button>
+                              <button 
+                                className={`pos-grid-cell ${selectedGuide.timestampPosition === 'bottom_left' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampPosition: 'bottom_left' })}
+                                title="Bottom Left"
+                              >
+                                <span className="pos-dot bottom-left" />
+                              </button>
+                              <button 
+                                className={`pos-grid-cell ${(selectedGuide.timestampPosition === 'bottom_right' || !selectedGuide.timestampPosition) ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampPosition: 'bottom_right' })}
+                                title="Bottom Right"
+                              >
+                                <span className="pos-dot bottom-right" />
+                              </button>
+                            </div>
+                          </div>
 
-                      {/* Style Select */}
-                      <select
-                        className="timestamp-select"
-                        value={selectedGuide.timestampStyle || 'dark'}
-                        onChange={(e) => updateTimestampOptions({ timestampStyle: e.target.value })}
-                        title="Timestamp Style"
-                      >
-                        <option value="dark">Modern Dark</option>
-                        <option value="digital_orange">Digital Orange</option>
-                        <option value="watermark">Watermark Outline</option>
-                      </select>
-                    </>
+                          <div className="timestamp-popover-section">
+                            <label>Overlay Theme & Font</label>
+                            <div className="timestamp-theme-list">
+                              <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'dark' || !selectedGuide.timestampStyle ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'dark' })}
+                              >
+                                <div className="theme-preview dark">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Modern Dark</div>
+                                  <div className="theme-desc">DM Sans, dark glass box</div>
+                                </div>
+                              </button>
+                              <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'digital_orange' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'digital_orange' })}
+                              >
+                                <div className="theme-preview orange">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Digital Orange</div>
+                                  <div className="theme-desc">DM Mono, orange dark box</div>
+                                </div>
+                              </button>
+                              <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'watermark' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'watermark' })}
+                              >
+                                <div className="theme-preview watermark">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Watermark Outline</div>
+                                  <div className="theme-desc">Sans outlined text, no box</div>
+                                </div>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   <button 
