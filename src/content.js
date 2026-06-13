@@ -22,7 +22,7 @@ hudStyle.textContent = `
     position: fixed !important;
     z-index: 2147483647 !important;
     background: #ffffff !important;
-    border: 1px solid #e5e7eb !important;
+    border: 1.5px solid #60a5fa !important;
     border-radius: 99px !important;
     padding: 8px 14px !important;
     display: flex !important;
@@ -312,15 +312,15 @@ function createHUD() {
   const savedLeft = sessionStorage.getItem('steply_hud_left');
   const savedTop = sessionStorage.getItem('steply_hud_top');
   if (savedLeft && savedTop) {
-    hudElement.style.bottom = 'auto';
-    hudElement.style.right = 'auto';
-    hudElement.style.left = savedLeft;
-    hudElement.style.top = savedTop;
+    hudElement.style.setProperty('bottom', 'auto', 'important');
+    hudElement.style.setProperty('right', 'auto', 'important');
+    hudElement.style.setProperty('left', savedLeft, 'important');
+    hudElement.style.setProperty('top', savedTop, 'important');
   } else {
-    hudElement.style.bottom = '20px';
-    hudElement.style.right = '20px';
-    hudElement.style.left = 'auto';
-    hudElement.style.top = 'auto';
+    hudElement.style.setProperty('bottom', '20px', 'important');
+    hudElement.style.setProperty('right', '20px', 'important');
+    hudElement.style.setProperty('left', 'auto', 'important');
+    hudElement.style.setProperty('top', 'auto', 'important');
   }
 
   // Button actions
@@ -366,10 +366,10 @@ function createHUD() {
     initialLeft = rect.left;
     initialTop = rect.top;
     
-    hudElement.style.bottom = 'auto';
-    hudElement.style.right = 'auto';
-    hudElement.style.left = initialLeft + 'px';
-    hudElement.style.top = initialTop + 'px';
+    hudElement.style.setProperty('bottom', 'auto', 'important');
+    hudElement.style.setProperty('right', 'auto', 'important');
+    hudElement.style.setProperty('left', initialLeft + 'px', 'important');
+    hudElement.style.setProperty('top', initialTop + 'px', 'important');
     e.preventDefault();
   });
 
@@ -385,8 +385,8 @@ function createHUD() {
     left = Math.max(10, Math.min(left, maxLeft));
     top = Math.max(10, Math.min(top, maxTop));
     
-    hudElement.style.left = left + 'px';
-    hudElement.style.top = top + 'px';
+    hudElement.style.setProperty('left', left + 'px', 'important');
+    hudElement.style.setProperty('top', top + 'px', 'important');
     
     sessionStorage.setItem('steply_hud_left', left + 'px');
     sessionStorage.setItem('steply_hud_top', top + 'px');
@@ -415,16 +415,15 @@ function showToast(messageText) {
   
   if (hudElement) {
     const hudRect = hudElement.getBoundingClientRect();
-    toast.style.bottom = 'auto';
-    toast.style.right = 'auto';
-    // Offset toast dynamic position above HUD
-    toast.style.left = Math.max(10, hudRect.right - 220) + 'px';
-    toast.style.top = Math.max(10, hudRect.top - 46) + 'px';
+    toast.style.setProperty('bottom', 'auto', 'important');
+    toast.style.setProperty('right', 'auto', 'important');
+    toast.style.setProperty('left', Math.max(10, hudRect.right - 220) + 'px', 'important');
+    toast.style.setProperty('top', Math.max(10, hudRect.top - 46) + 'px', 'important');
   } else {
-    toast.style.bottom = '20px';
-    toast.style.right = '20px';
-    toast.style.top = 'auto';
-    toast.style.left = 'auto';
+    toast.style.setProperty('bottom', '20px', 'important');
+    toast.style.setProperty('right', '20px', 'important');
+    toast.style.setProperty('top', 'auto', 'important');
+    toast.style.setProperty('left', 'auto', 'important');
   }
   
   // Reset opacity/display state classes

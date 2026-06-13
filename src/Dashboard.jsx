@@ -2174,13 +2174,17 @@ export default function Dashboard() {
     });
   };
 
-  const updateGuideTimestamp = (showTimestamp) => {
-    chrome.runtime.sendMessage({ action: 'updateGuideTimestamp', guideId: selectedGuide.id, showTimestamp }, (res) => {
+  const updateTimestampOptions = (options) => {
+    chrome.runtime.sendMessage({ 
+      action: 'updateGuideTimestampOptions', 
+      guideId: selectedGuide.id, 
+      ...options 
+    }, (res) => {
       if (res?.error) {
-        alert(`Failed to update guide timestamp visibility: ${res.error}`);
+        alert(`Failed to update timestamp options: ${res.error}`);
         return;
       }
-      setSelectedGuide({ ...selectedGuide, showTimestamp });
+      setSelectedGuide({ ...selectedGuide, ...options });
       loadGuides();
     });
   };
