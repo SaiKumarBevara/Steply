@@ -82,16 +82,36 @@ function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right'
   let bgColor = 'rgba(17, 24, 39, 0.75)';
   let drawBox = true;
   let textOutline = false;
+  let borderColor = null;
+  let borderWidth = 1;
   
   if (style === 'digital_orange') {
-    font = 'bold 20px "DM Mono", monospace';
+    font = 'bold 20px "Courier New", Courier, monospace';
     textColor = '#FF5500';
     bgColor = 'rgba(0, 0, 0, 0.85)';
+    borderColor = '#FF5500';
+    borderWidth = 1.5;
   } else if (style === 'watermark') {
     font = 'bold 22px "DM Sans", sans-serif';
     textColor = 'rgba(255, 255, 255, 0.45)';
     drawBox = false;
     textOutline = true;
+  } else if (style === 'glass_light') {
+    font = 'bold 20px "DM Sans", sans-serif';
+    textColor = '#0f172a';
+    bgColor = 'rgba(255, 255, 255, 0.85)';
+    borderColor = 'rgba(15, 23, 42, 0.15)';
+  } else if (style === 'cyber_purple') {
+    font = 'bold 20px "Courier New", Courier, monospace';
+    textColor = '#ec4899';
+    bgColor = 'rgba(15, 23, 42, 0.9)';
+    borderColor = '#a855f7';
+    borderWidth = 1.5;
+  } else if (style === 'elegant_serif') {
+    font = 'italic 20px Georgia, serif';
+    textColor = '#292524';
+    bgColor = 'rgba(253, 251, 247, 0.95)';
+    borderColor = '#e7e5e4';
   }
   
   ctx.font = font;
@@ -130,8 +150,14 @@ function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right'
   if (drawBox) {
     ctx.fillStyle = bgColor;
     ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(x, y, boxWidth, boxHeight, 6) : ctx.rect(x, y, boxWidth, boxHeight);
+    ctx.roundRect ? ctx.roundRect(x, y, boxWidth, boxHeight, 8) : ctx.rect(x, y, boxWidth, boxHeight);
     ctx.fill();
+    
+    if (borderColor) {
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = borderWidth;
+      ctx.stroke();
+    }
   }
   
   ctx.fillStyle = textColor;
@@ -2450,13 +2476,33 @@ export default function Dashboard() {
                                 </div>
                               </button>
                               <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'glass_light' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'glass_light' })}
+                              >
+                                <div className="theme-preview glass-light">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Glass Light</div>
+                                  <div className="theme-desc">DM Sans, white glass box</div>
+                                </div>
+                              </button>
+                              <button 
                                 className={`theme-list-item ${selectedGuide.timestampStyle === 'digital_orange' ? 'selected' : ''}`}
                                 onClick={() => updateTimestampOptions({ timestampStyle: 'digital_orange' })}
                               >
                                 <div className="theme-preview orange">11:14:23</div>
                                 <div className="theme-meta">
                                   <div className="theme-name">Digital Orange</div>
-                                  <div className="theme-desc">DM Mono, orange dark box</div>
+                                  <div className="theme-desc">Courier, orange dark box</div>
+                                </div>
+                              </button>
+                              <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'cyber_purple' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'cyber_purple' })}
+                              >
+                                <div className="theme-preview cyber-purple">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Cyber Purple</div>
+                                  <div className="theme-desc">Courier, pink neon on dark</div>
                                 </div>
                               </button>
                               <button 
@@ -2466,7 +2512,17 @@ export default function Dashboard() {
                                 <div className="theme-preview watermark">11:14:23</div>
                                 <div className="theme-meta">
                                   <div className="theme-name">Watermark Outline</div>
-                                  <div className="theme-desc">Sans outlined text, no box</div>
+                                  <div className="theme-desc">Sans outline, background-free</div>
+                                </div>
+                              </button>
+                              <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'elegant_serif' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'elegant_serif' })}
+                              >
+                                <div className="theme-preview elegant-serif">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Elegant Serif</div>
+                                  <div className="theme-desc">Georgia Italic, cream ivory box</div>
                                 </div>
                               </button>
                             </div>
