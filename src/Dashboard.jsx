@@ -82,15 +82,11 @@ function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right'
   let bgColor = 'rgba(17, 24, 39, 0.75)';
   let drawBox = true;
   let textOutline = false;
-  let borderColor = null;
-  let borderWidth = 1;
   
   if (style === 'digital_orange') {
     font = 'bold 20px "Courier New", Courier, monospace';
     textColor = '#FF5500';
     bgColor = 'rgba(0, 0, 0, 0.85)';
-    borderColor = '#FF5500';
-    borderWidth = 1.5;
   } else if (style === 'watermark') {
     font = 'bold 22px "DM Sans", sans-serif';
     textColor = 'rgba(255, 255, 255, 0.45)';
@@ -100,18 +96,22 @@ function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right'
     font = 'bold 20px "DM Sans", sans-serif';
     textColor = '#0f172a';
     bgColor = 'rgba(255, 255, 255, 0.85)';
-    borderColor = 'rgba(15, 23, 42, 0.15)';
   } else if (style === 'cyber_purple') {
     font = 'bold 20px "Courier New", Courier, monospace';
     textColor = '#ec4899';
     bgColor = 'rgba(15, 23, 42, 0.9)';
-    borderColor = '#a855f7';
-    borderWidth = 1.5;
   } else if (style === 'elegant_serif') {
     font = 'italic 20px Georgia, serif';
     textColor = '#292524';
     bgColor = 'rgba(253, 251, 247, 0.95)';
-    borderColor = '#e7e5e4';
+  } else if (style === 'minimal_sans') {
+    font = 'bold 20px "DM Sans", sans-serif';
+    textColor = '#FFFFFF';
+    drawBox = false;
+  } else if (style === 'minimal_serif') {
+    font = 'italic 20px Georgia, serif';
+    textColor = '#FFFFFF';
+    drawBox = false;
   }
   
   ctx.font = font;
@@ -152,12 +152,6 @@ function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right'
     ctx.beginPath();
     ctx.roundRect ? ctx.roundRect(x, y, boxWidth, boxHeight, 8) : ctx.rect(x, y, boxWidth, boxHeight);
     ctx.fill();
-    
-    if (borderColor) {
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = borderWidth;
-      ctx.stroke();
-    }
   }
   
   ctx.fillStyle = textColor;
@@ -2523,6 +2517,26 @@ export default function Dashboard() {
                                 <div className="theme-meta">
                                   <div className="theme-name">Elegant Serif</div>
                                   <div className="theme-desc">Georgia Italic, cream ivory box</div>
+                                </div>
+                              </button>
+                              <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'minimal_sans' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'minimal_sans' })}
+                              >
+                                <div className="theme-preview minimal-sans">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Minimal White (Sans)</div>
+                                  <div className="theme-desc">DM Sans, white, no box/border</div>
+                                </div>
+                              </button>
+                              <button 
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'minimal_serif' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'minimal_serif' })}
+                              >
+                                <div className="theme-preview minimal-serif">11:14:23</div>
+                                <div className="theme-meta">
+                                  <div className="theme-name">Minimal White (Serif)</div>
+                                  <div className="theme-desc">Georgia Italic, white, no box/border</div>
                                 </div>
                               </button>
                             </div>
