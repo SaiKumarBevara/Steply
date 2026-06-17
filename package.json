@@ -1,6 +1,6 @@
 {
   "name": "steply-extension",
-  "version": "1.2.0",
+  "version": "3.0.0",
   "description": "Auto-generate step-by-step guides with Chrome Extension",
   "main": "index.js",
   "scripts": {
