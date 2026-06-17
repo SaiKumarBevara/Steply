@@ -72,46 +72,19 @@ const HIGHLIGHT_COLORS = {
   none:  null,
 };
 
-function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right', style = 'dark') {
+function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right', style = 'minimal_black') {
   if (!timestamp) return;
   const dateText = new Date(timestamp).toLocaleString();
   
-  // Style configurations
-  let font = 'bold 20px "DM Sans", sans-serif';
-  let textColor = '#FFFFFF';
-  let bgColor = 'rgba(17, 24, 39, 0.75)';
-  let drawBox = true;
-  let textOutline = false;
+  // Style configurations - default to normal timestamp with black color without background and border
+  let font = '20px "DM Sans", sans-serif';
+  let textColor = '#000000';
   
-  if (style === 'digital_orange') {
-    font = 'bold 20px "Courier New", Courier, monospace';
-    textColor = '#FF5500';
-    bgColor = 'rgba(0, 0, 0, 0.85)';
-  } else if (style === 'watermark') {
-    font = 'bold 22px "DM Sans", sans-serif';
-    textColor = 'rgba(255, 255, 255, 0.45)';
-    drawBox = false;
-    textOutline = true;
-  } else if (style === 'glass_light') {
-    font = 'bold 20px "DM Sans", sans-serif';
-    textColor = '#0f172a';
-    bgColor = 'rgba(255, 255, 255, 0.85)';
-  } else if (style === 'cyber_purple') {
-    font = 'bold 20px "Courier New", Courier, monospace';
-    textColor = '#ec4899';
-    bgColor = 'rgba(15, 23, 42, 0.9)';
-  } else if (style === 'elegant_serif') {
-    font = 'italic 20px Georgia, serif';
-    textColor = '#292524';
-    bgColor = 'rgba(253, 251, 247, 0.95)';
-  } else if (style === 'minimal_sans') {
-    font = 'bold 20px "DM Sans", sans-serif';
+  if (style === 'minimal_white') {
     textColor = '#FFFFFF';
-    drawBox = false;
-  } else if (style === 'minimal_serif') {
-    font = 'italic 20px Georgia, serif';
-    textColor = '#FFFFFF';
-    drawBox = false;
+  } else {
+    // any other style (including minimal_black or legacy styles) maps to normal black
+    textColor = '#000000';
   }
   
   ctx.font = font;
@@ -147,23 +120,9 @@ function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right'
   }
   
   ctx.save();
-  if (drawBox) {
-    ctx.fillStyle = bgColor;
-    ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(x, y, boxWidth, boxHeight, 8) : ctx.rect(x, y, boxWidth, boxHeight);
-    ctx.fill();
-  }
-  
   ctx.fillStyle = textColor;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  
-  if (textOutline) {
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.lineWidth = 3;
-    ctx.strokeText(dateText, x + paddingX, y + paddingY);
-  }
-  
   ctx.fillText(dateText, x + paddingX, y + paddingY);
   ctx.restore();
 }
@@ -205,7 +164,7 @@ async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosit
   });
 }
 
-function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = false, timestampPosition = 'bottom_right', timestampStyle = 'dark' }) {
+function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = true, timestampPosition = 'bottom_right', timestampStyle = 'minimal_black' }) {
   const canvasRef = useRef(null);
   // imgRef keeps the decoded image so we can redraw without re-fetching
   const imgRef = useRef(null);
@@ -731,6 +690,10 @@ export default function Dashboard() {
 
   const lastRequestedId = useRef(null);
 
+  const showTimestamp = selectedGuide?.showTimestamp !== false;
+  const timestampPosition = selectedGuide?.timestampPosition || 'bottom_right';
+  const timestampStyle = selectedGuide?.timestampStyle || 'minimal_black';
+
   useEffect(() => {
     if (selectedGuide) {
       setCoverTitle(selectedGuide.title || '');
@@ -1232,9 +1195,9 @@ export default function Dashboard() {
           const annotated = await getAnnotatedDataUrl(
             step, 
             stepColor, 
-            selectedGuide.showTimestamp,
-            selectedGuide.timestampPosition,
-            selectedGuide.timestampStyle
+            showTimestamp,
+            timestampPosition,
+            timestampStyle
           );
           if (annotated) {
             doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
@@ -1282,9 +1245,9 @@ export default function Dashboard() {
           const annotated = await getAnnotatedDataUrl(
             step, 
             stepColor, 
-            selectedGuide.showTimestamp,
-            selectedGuide.timestampPosition,
-            selectedGuide.timestampStyle
+            showTimestamp,
+            timestampPosition,
+            timestampStyle
           );
           if (annotated) md += `\n![Screenshot](${annotated})\n`;
         }
@@ -1348,9 +1311,9 @@ export default function Dashboard() {
             const annotated = await getAnnotatedDataUrl(
               step, 
               stepColor, 
-              selectedGuide.showTimestamp,
-              selectedGuide.timestampPosition,
-              selectedGuide.timestampStyle
+              showTimestamp,
+              timestampPosition,
+              timestampStyle
             );
             if (annotated) {
               const b64  = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
@@ -1399,9 +1362,9 @@ export default function Dashboard() {
         const processed = await standardizeStep(
           s, 
           selectedGuide.defaultColor, 
-          selectedGuide.showTimestamp,
-          selectedGuide.timestampPosition,
-          selectedGuide.timestampStyle
+          showTimestamp,
+          timestampPosition,
+          timestampStyle
         );
         processedSteps.push(processed);
         setExportProgress({ current: i + 1, total: selectedGuide.steps.length, format: 'JSON' });
@@ -1451,9 +1414,9 @@ export default function Dashboard() {
           ? await getAnnotatedDataUrl(
               step, 
               stepColor, 
-              selectedGuide.showTimestamp,
-              selectedGuide.timestampPosition,
-              selectedGuide.timestampStyle
+              showTimestamp,
+              timestampPosition,
+              timestampStyle
             )
           : null;
           
@@ -1751,7 +1714,13 @@ export default function Dashboard() {
         for (const g of fullGuides) {
           const processedSteps = [];
           for (const s of g.steps) {
-            const processed = await standardizeStep(s, g.defaultColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+            const processed = await standardizeStep(
+              s, 
+              g.defaultColor, 
+              g.showTimestamp !== false, 
+              g.timestampPosition || 'bottom_right', 
+              g.timestampStyle || 'minimal_black'
+            );
             processedSteps.push(processed);
             currentStep++;
             setExportProgress({ current: currentStep, total: totalSteps, format: 'JSON' });
@@ -1788,7 +1757,13 @@ export default function Dashboard() {
             if (step.description) md += `\n> ${step.description}\n`;
             if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
               const stepColor = step.color || g.defaultColor || 'red';
-              const annotated = await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+              const annotated = await getAnnotatedDataUrl(
+                step, 
+                stepColor, 
+                g.showTimestamp !== false, 
+                g.timestampPosition || 'bottom_right', 
+                g.timestampStyle || 'minimal_black'
+              );
               if (annotated) md += `\n![Screenshot](${annotated})\n`;
             }
             md += `\n`;
@@ -1822,7 +1797,13 @@ export default function Dashboard() {
             y += 4;
             if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
               const stepColor = step.color || g.defaultColor || 'red';
-              const annotated = await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+              const annotated = await getAnnotatedDataUrl(
+                step, 
+                stepColor, 
+                g.showTimestamp !== false, 
+                g.timestampPosition || 'bottom_right', 
+                g.timestampStyle || 'minimal_black'
+              );
               if (annotated) {
                 doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
                 y += 110;
@@ -1850,7 +1831,13 @@ export default function Dashboard() {
             if (step.description) children.push(new Paragraph({ text: step.description }));
             if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
               const stepColor = step.color || g.defaultColor || 'red';
-              const annotated = await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle);
+              const annotated = await getAnnotatedDataUrl(
+                step, 
+                stepColor, 
+                g.showTimestamp !== false, 
+                g.timestampPosition || 'bottom_right', 
+                g.timestampStyle || 'minimal_black'
+              );
               if (annotated) {
                 const b64 = annotated.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
                 const bin = window.atob(b64);
@@ -1875,7 +1862,13 @@ export default function Dashboard() {
             const step = g.steps[i];
             const stepColor = step.color || g.defaultColor || 'red';
             const annotated = (step.stepType !== 'note' && (step.screenshot || step.screenshotId))
-              ? await getAnnotatedDataUrl(step, stepColor, g.showTimestamp, g.timestampPosition, g.timestampStyle)
+              ? await getAnnotatedDataUrl(
+                  step, 
+                  stepColor, 
+                  g.showTimestamp !== false, 
+                  g.timestampPosition || 'bottom_right', 
+                  g.timestampStyle || 'minimal_black'
+                )
               : null;
             
             stepsHtml += `
@@ -2389,15 +2382,15 @@ export default function Dashboard() {
                   {/* ── Timestamp Toggle (Guide Level) ── */}
                   <div className="trinity-toggle" title="Show timestamps on screenshots">
                     <button
-                      className={`trinity-btn ${selectedGuide?.showTimestamp ? 'active-none' : ''}`}
+                      className={`trinity-btn ${showTimestamp ? 'active-none' : ''}`}
                       onClick={() => updateTimestampOptions({ showTimestamp: true })}
                       title="Show timestamps"
                     >
-                      <i className="ti ti-clock" style={{ fontSize: '12px', color: selectedGuide?.showTimestamp ? '#185FA5' : 'inherit' }} />
+                      <i className="ti ti-clock" style={{ fontSize: '12px', color: showTimestamp ? '#185FA5' : 'inherit' }} />
                       Time: Yes
                     </button>
                     <button
-                      className={`trinity-btn ${!selectedGuide?.showTimestamp ? 'active-none' : ''}`}
+                      className={`trinity-btn ${!showTimestamp ? 'active-none' : ''}`}
                       onClick={() => updateTimestampOptions({ showTimestamp: false })}
                       title="Hide timestamps"
                     >
@@ -2406,7 +2399,7 @@ export default function Dashboard() {
                     </button>
                   </div>
 
-                  {selectedGuide?.showTimestamp && (
+                  {showTimestamp && (
                     <div style={{ position: 'relative', display: 'inline-block' }}>
                       <button
                         className={`timestamp-settings-trigger ${showTimestampPopover ? 'active' : ''}`}
@@ -2460,83 +2453,23 @@ export default function Dashboard() {
                             <label>Overlay Theme & Font</label>
                             <div className="timestamp-theme-list">
                               <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'dark' || !selectedGuide.timestampStyle ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'dark' })}
+                                className={`theme-list-item ${selectedGuide.timestampStyle !== 'minimal_white' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'minimal_black' })}
                               >
-                                <div className="theme-preview dark">11:14:23</div>
+                                <div className="theme-preview minimal-black">11:14:23</div>
                                 <div className="theme-meta">
-                                  <div className="theme-name">Modern Dark</div>
-                                  <div className="theme-desc">DM Sans, dark glass box</div>
+                                  <div className="theme-name">Normal Black</div>
+                                  <div className="theme-desc">DM Sans, black color, no box/border</div>
                                 </div>
                               </button>
                               <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'glass_light' ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'glass_light' })}
+                                className={`theme-list-item ${selectedGuide.timestampStyle === 'minimal_white' ? 'selected' : ''}`}
+                                onClick={() => updateTimestampOptions({ timestampStyle: 'minimal_white' })}
                               >
-                                <div className="theme-preview glass-light">11:14:23</div>
+                                <div className="theme-preview minimal-white">11:14:23</div>
                                 <div className="theme-meta">
-                                  <div className="theme-name">Glass Light</div>
-                                  <div className="theme-desc">DM Sans, white glass box</div>
-                                </div>
-                              </button>
-                              <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'digital_orange' ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'digital_orange' })}
-                              >
-                                <div className="theme-preview orange">11:14:23</div>
-                                <div className="theme-meta">
-                                  <div className="theme-name">Digital Orange</div>
-                                  <div className="theme-desc">Courier, orange dark box</div>
-                                </div>
-                              </button>
-                              <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'cyber_purple' ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'cyber_purple' })}
-                              >
-                                <div className="theme-preview cyber-purple">11:14:23</div>
-                                <div className="theme-meta">
-                                  <div className="theme-name">Cyber Purple</div>
-                                  <div className="theme-desc">Courier, pink neon on dark</div>
-                                </div>
-                              </button>
-                              <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'watermark' ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'watermark' })}
-                              >
-                                <div className="theme-preview watermark">11:14:23</div>
-                                <div className="theme-meta">
-                                  <div className="theme-name">Watermark Outline</div>
-                                  <div className="theme-desc">Sans outline, background-free</div>
-                                </div>
-                              </button>
-                              <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'elegant_serif' ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'elegant_serif' })}
-                              >
-                                <div className="theme-preview elegant-serif">11:14:23</div>
-                                <div className="theme-meta">
-                                  <div className="theme-name">Elegant Serif</div>
-                                  <div className="theme-desc">Georgia Italic, cream ivory box</div>
-                                </div>
-                              </button>
-                              <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'minimal_sans' ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'minimal_sans' })}
-                              >
-                                <div className="theme-preview minimal-sans">11:14:23</div>
-                                <div className="theme-meta">
-                                  <div className="theme-name">Minimal White (Sans)</div>
-                                  <div className="theme-desc">DM Sans, white, no box/border</div>
-                                </div>
-                              </button>
-                              <button 
-                                className={`theme-list-item ${selectedGuide.timestampStyle === 'minimal_serif' ? 'selected' : ''}`}
-                                onClick={() => updateTimestampOptions({ timestampStyle: 'minimal_serif' })}
-                              >
-                                <div className="theme-preview minimal-serif">11:14:23</div>
-                                <div className="theme-meta">
-                                  <div className="theme-name">Minimal White (Serif)</div>
-                                  <div className="theme-desc">Georgia Italic, white, no box/border</div>
+                                  <div className="theme-name">Normal White</div>
+                                  <div className="theme-desc">DM Sans, white color, no box/border</div>
                                 </div>
                               </button>
                             </div>
@@ -2585,9 +2518,9 @@ export default function Dashboard() {
                     deleteStep={deleteStep}
                     updateStepColor={updateStepColor}
                     guideColor={guideColor}
-                    showTimestamp={selectedGuide?.showTimestamp}
-                    timestampPosition={selectedGuide?.timestampPosition}
-                    timestampStyle={selectedGuide?.timestampStyle}
+                    showTimestamp={showTimestamp}
+                    timestampPosition={timestampPosition}
+                    timestampStyle={timestampStyle}
                     onRedact={setRedactingStep}
                     duplicateStep={duplicateStep}
                     draggingIndex={draggingIndex}

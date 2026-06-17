@@ -1022,6 +1022,18 @@ body {
   border: 1px dashed #cbd5e1;
 }
 
+.theme-preview.minimal-black {
+  background: transparent;
+  color: #000000;
+  border: 1px solid #cbd5e1;
+}
+
+.theme-preview.minimal-white {
+  background: #0f172a;
+  color: #ffffff;
+  border: none;
+}
+
 .theme-meta {
   display: flex;
   flex-direction: column;

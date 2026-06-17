@@ -312,9 +312,9 @@ async function handleMessage(message, sender, sendResponse) {
         updatedAt: new Date().toISOString(),
         stepCount: 0,
         defaultColor: res.highlightColor || 'red',
-        showTimestamp: false,
+        showTimestamp: true,
         timestampPosition: 'bottom_right',
-        timestampStyle: 'dark'
+        timestampStyle: 'minimal_black'
       };
       await saveGuide(currentGuide);
       sessionStartStepCount = 0;
@@ -714,9 +714,9 @@ async function processNextStep() {
         updatedAt: new Date().toISOString(),
         stepCount: 0,
         defaultColor: res.highlightColor || 'red',
-        showTimestamp: false,
+        showTimestamp: true,
         timestampPosition: 'bottom_right',
-        timestampStyle: 'dark'
+        timestampStyle: 'minimal_black'
       };
       await saveGuide(currentGuide);
       persistState();
