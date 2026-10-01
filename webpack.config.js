@@ -46,7 +46,36 @@ module.exports = {
         { from: 'src/popup.html', to: 'popup.html', noErrorOnMissing: true },
         { from: 'src/dashboard.html', to: 'dashboard.html', noErrorOnMissing: true },
         { from: 'src/privacy.html', to: 'privacy.html', noErrorOnMissing: true },
-        { from: 'images', to: 'images', noErrorOnMissing: true }
+        { from: 'images', to: 'images', noErrorOnMissing: true },
+        // Tabler icon webfont, vendored locally. Previously loaded from
+        // cdn.jsdelivr.net, which counts as remotely hosted code under the
+        // Chrome Web Store MV3 policy. The version is pinned exactly in
+        // package.json so the file layout and the @font-face patch below
+        // cannot shift underneath us.
+        {
+          from: 'node_modules/@tabler/icons-webfont/tabler-icons.min.css',
+          to: 'vendor/tabler/tabler-icons.min.css',
+          transform(content) {
+            // Only woff2 is copied, so repoint the single @font-face at it —
+            // otherwise Chrome requests the absent eot/ttf/woff files and
+            // logs 404s on every page load.
+            const css = content.toString();
+            const patched = css.replace(
+              /src:url\("\.\/fonts\/tabler-icons\.eot[^}]*/,
+              'src:url("./fonts/tabler-icons.woff2?v2.44.0") format("woff2")'
+            );
+            if (patched === css) {
+              throw new Error(
+                'Tabler @font-face src block not found — check the @tabler/icons-webfont version pin'
+              );
+            }
+            return patched;
+          }
+        },
+        {
+          from: 'node_modules/@tabler/icons-webfont/fonts/tabler-icons.woff2',
+          to: 'vendor/tabler/fonts/tabler-icons.woff2'
+        }
       ]
     })
   ],

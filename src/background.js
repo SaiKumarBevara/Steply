@@ -1,7 +1,6 @@
 // ─── Configuration ────────────────────────────────────────────────────────────
 const DB_NAME        = 'GuideCapture';
 const DB_VERSION     = 2;       // v2 adds separate 'screenshots' object store
-const MAX_STEPS      = 100;     // max steps per guide before recording is paused
 const MAX_IMG_WIDTH  = 1280;    // resize screenshots wider than this
 const JPEG_QUALITY   = 0.72;    // JPEG compression (0.6–0.8 sweet spot)
 const WARN_RATIO     = 0.70;    // warn user at 70 % storage used
@@ -16,6 +15,12 @@ let isProcessing  = false;
 let isInitializingGuide = false;
 let sessionStartStepCount = 0;
 let sessionStartTime = null;
+// IDs of steps recorded during the current session. Cancel uses this to delete
+// exactly what this session added, instead of inferring the set from timestamps
+// — dashboard reorder/duplicate/insert rewrite step timestamps to synthetic
+// values (createdAt + idx * 10s), so a timestamp cutoff can match steps from
+// earlier sessions and destroy them. Empty => fall back to the old cutoff path.
+let sessionStepIds = [];
 let lastStepInfo  = { action: '', selector: '', timestamp: 0 };
 const DEDUPE_MS   = 800;  // Balanced for speed and noise reduction
 
@@ -49,11 +54,12 @@ function openDB() {
 // which caused processStep to create a brand-new guide instead of resuming.
 let dbReady = openDB().then(() => {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['isRecording', 'activeGuideId', 'isPaused', 'sessionStartStepCount', 'sessionStartTime'], (res) => {
+    chrome.storage.local.get(['isRecording', 'activeGuideId', 'isPaused', 'sessionStartStepCount', 'sessionStartTime', 'sessionStepIds'], (res) => {
       if (res.isRecording) isRecording = true;
       if (res.isPaused) isPaused = true;
       if (res.sessionStartStepCount !== undefined) sessionStartStepCount = res.sessionStartStepCount;
       if (res.sessionStartTime !== undefined) sessionStartTime = res.sessionStartTime;
+      if (Array.isArray(res.sessionStepIds)) sessionStepIds = res.sessionStepIds;
       if (res.activeGuideId) {
         const tx  = db.transaction(['guides'], 'readonly');
         const req = tx.objectStore('guides').get(res.activeGuideId);
@@ -75,7 +81,8 @@ function persistState() {
     activeGuideId: currentGuide ? currentGuide.id : null,
     isPaused,
     sessionStartStepCount,
-    sessionStartTime
+    sessionStartTime,
+    sessionStepIds
   });
 }
 
@@ -154,9 +161,12 @@ function getGuide(guideId) {
     let guide = null, steps = [];
     const tx = db.transaction(['guides', 'steps'], 'readonly');
     tx.objectStore('guides').get(guideId).onsuccess = (e) => { guide = e.target.result; };
-    tx.objectStore('steps').openCursor().onsuccess  = (e) => {
+    // Walk only this guide's steps via the guideId index instead of scanning the
+    // whole store. Same records, same order after the sort below — deleteGuide()
+    // already reads the steps through this index.
+    tx.objectStore('steps').index('guideId').openCursor(IDBKeyRange.only(guideId)).onsuccess = (e) => {
       const c = e.target.result;
-      if (c) { if (c.value.guideId === guideId) steps.push(c.value); c.continue(); }
+      if (c) { steps.push(c.value); c.continue(); }
     };
     tx.oncomplete = () => {
       if (guide) {
@@ -319,6 +329,7 @@ async function handleMessage(message, sender, sendResponse) {
       await saveGuide(currentGuide);
       sessionStartStepCount = 0;
       sessionStartTime = Date.now();
+      sessionStepIds = [];
       persistState();
       broadcast('startRecording');
       sendResponse({ status: 'started' });
@@ -338,6 +349,7 @@ async function handleMessage(message, sender, sendResponse) {
     isPaused     = false;
     chrome.storage.local.set({ isPaused: false });
     currentGuide = null;
+    sessionStepIds = [];
     persistState();
     broadcast('stopRecording');
     sendResponse({ status: 'stopped' });
@@ -364,6 +376,7 @@ async function handleMessage(message, sender, sendResponse) {
       currentGuide = guide;
       sessionStartStepCount = guide.stepCount;
       sessionStartTime = Date.now();
+      sessionStepIds = [];
       persistState();
       broadcast('startRecording');
       sendResponse({ success: true });
@@ -488,6 +501,7 @@ async function handleMessage(message, sender, sendResponse) {
 
     if (!currentGuide) {
       currentGuide = null;
+      sessionStepIds = [];
       persistState();
       broadcast('stopRecording');
       sendResponse({ success: true });
@@ -501,12 +515,14 @@ async function handleMessage(message, sender, sendResponse) {
       deleteGuide(guideIdToDelete)
         .then(() => {
           currentGuide = null;
+          sessionStepIds = [];
           persistState();
           broadcast('stopRecording');
           sendResponse({ success: true });
         })
         .catch(e => {
           currentGuide = null;
+          sessionStepIds = [];
           persistState();
           broadcast('stopRecording');
           sendResponse({ error: e.toString() });
@@ -514,7 +530,14 @@ async function handleMessage(message, sender, sendResponse) {
     } else {
       // Existing resumed guide, revert to sessionStartStepCount
       const startTimeCutoff = sessionStartTime;
-      
+      // The steps this session actually recorded, when known. If the list is
+      // empty — e.g. the extension updated mid-recording, or the session predates
+      // this tracking — fall back to the original timestamp cutoff so behaviour
+      // is identical to before.
+      const sessionIds = (Array.isArray(sessionStepIds) && sessionStepIds.length)
+        ? new Set(sessionStepIds)
+        : null;
+
       const tx = db.transaction(['steps', 'screenshots', 'guides'], 'readwrite');
       const stepsStore = tx.objectStore('steps');
       const ssStore = tx.objectStore('screenshots');
@@ -531,9 +554,15 @@ async function handleMessage(message, sender, sendResponse) {
         const cursor = e.target.result;
         if (cursor) {
           const step = cursor.value;
-          const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-          if (stepTime >= startTimeCutoff) {
-            ssStore.delete('ss_' + step.id);
+          let fromThisSession;
+          if (sessionIds) {
+            fromThisSession = sessionIds.has(step.id);
+          } else {
+            const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
+            fromThisSession = stepTime >= startTimeCutoff;
+          }
+          if (fromThisSession) {
+            ssStore.delete(step.screenshotId || 'ss_' + step.id);
             cursor.delete();
           }
           cursor.continue();
@@ -542,6 +571,7 @@ async function handleMessage(message, sender, sendResponse) {
 
       tx.oncomplete = () => {
         currentGuide = null;
+        sessionStepIds = [];
         persistState();
         broadcast('stopRecording');
         sendResponse({ success: true, revertedTo: sessionStartStepCount });
@@ -550,6 +580,7 @@ async function handleMessage(message, sender, sendResponse) {
       tx.onerror = (err) => {
         console.error("Cancel recording transaction error:", err);
         currentGuide = null;
+        sessionStepIds = [];
         persistState();
         broadcast('stopRecording');
         sendResponse({ error: 'Failed to revert session steps' });
@@ -588,6 +619,13 @@ async function handleMessage(message, sender, sendResponse) {
       // 1. Delete the step
       stepsStore.delete(message.stepId);
 
+      // Recount the guide's remaining steps instead of decrementing the stored
+      // counter. Issued after the delete above, so it reflects the post-delete
+      // state. A counter that has already drifted (interrupted session, older
+      // build) can never recover from `stepCount - 1`, which is what makes the
+      // sidebar's "N steps" disagree with the step list even after a refresh.
+      const remainingReq = stepsStore.index('guideId').count(IDBKeyRange.only(guideId));
+
       // 2. Handle screenshot deletion and guide updates
       if (ssId) {
         ssStore.get(ssId).onsuccess = (e2) => {
@@ -598,7 +636,9 @@ async function handleMessage(message, sender, sendResponse) {
           guideStore.get(guideId).onsuccess = (e3) => {
             const guide = e3.target.result;
             if (guide) {
-              guide.stepCount = Math.max(0, guide.stepCount - 1);
+              guide.stepCount = typeof remainingReq.result === 'number'
+                ? remainingReq.result
+                : Math.max(0, guide.stepCount - 1);
               guide.storageBytes = Math.max(0, (guide.storageBytes || 0) - ssSize);
               guide.updatedAt = new Date().toISOString();
               guideStore.put(guide);
@@ -609,7 +649,9 @@ async function handleMessage(message, sender, sendResponse) {
         guideStore.get(guideId).onsuccess = (e3) => {
           const guide = e3.target.result;
           if (guide) {
-            guide.stepCount = Math.max(0, guide.stepCount - 1);
+            guide.stepCount = typeof remainingReq.result === 'number'
+              ? remainingReq.result
+              : Math.max(0, guide.stepCount - 1);
             guide.updatedAt = new Date().toISOString();
             guideStore.put(guide);
           }
@@ -773,6 +815,14 @@ async function processNextStep() {
     }
 
     await Promise.all([saveStep(step), saveGuide(currentGuide)]);
+
+    // Record the step for cancelRecording. Deleting by the IDs this session
+    // actually created is exact; the timestamp cutoff it falls back to can match
+    // steps from earlier sessions, because a dashboard reorder/duplicate/insert
+    // rewrites step timestamps to synthetic values.
+    sessionStepIds.push(step.id);
+    persistState();
+
     broadcast({ action: 'processStep', step, guideId: currentGuide.id });
     
     try {

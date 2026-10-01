@@ -161,8 +161,12 @@ const path = require('path');
 
   // Write screenshot files to artifacts folder
   const fs = require('fs');
-  const artifactsDir = 'C:\\Users\\SaikumarBevara\\.gemini\\antigravity\\brain\\c6b924fa-0ba9-40c0-be0d-2df423feac21';
-  
+  // Local to the checkout so the test runs on any machine. Was a hardcoded
+  // absolute path that existed only on one developer's box.
+  const artifactsDir = path.resolve(__dirname, 'test-artifacts');
+  fs.mkdirSync(artifactsDir, { recursive: true });
+
+
   if (dbData.screenshots && dbData.screenshots.length > 0) {
     dbData.screenshots.forEach((ss, idx) => {
       const base64Data = ss.dataUrl.replace(/^data:image\/jpeg;base64,/, '').replace(/^data:image\/png;base64,/, '');

@@ -34,7 +34,7 @@ Make sure you have the following installed:
 
 1. Open a terminal and navigate to the project folder:
    ```
-    cd c:\Users\SaikumarBevara\Downloads\Extensions\Steply
+    cd path\to\Steply
    ```
 
 2. Install all dependencies:
@@ -65,7 +65,7 @@ This compiles all source files from `/src` into the `/dist` folder that Chrome l
 3. Click **"Load unpacked"**
 4. Select the `/dist` folder:
    ```
-    c:\Users\SaikumarBevara\Downloads\Extensions\Steply\dist
+    path\to\Steply\dist
    ```
 5. The **Steply** extension will appear in your extension list
 6. Pin it to the toolbar by clicking the puzzle icon (🧩) → pin Steply
@@ -89,7 +89,7 @@ This compiles all source files from `/src` into the `/dist` folder that Chrome l
 The extension automatically captures:
 - **Clicks** — every button, link, checkbox, or dropdown you click
 - **Text input** — what you type in any field (captured when you leave the field). Passwords are masked as `••••••••`
-- **Scrolling** — when you scroll up, down, left, or right by more than 80px
+- **Scrolling** — when you scroll up, down, left, or right by more than 50px
 - **Screenshots** — a screenshot is taken after every action, with a red box highlighting the clicked element
 
 ### Step 4 — Stop Recording
@@ -216,7 +216,7 @@ You can open the Steply popup at any time using your keyboard:
 |---|---|
 | **Click tracking** | Captures every button, link, checkbox, dropdown click with a human-readable description |
 | **Text input tracking** | Records what the user typed in any field when they leave it (`blur`). Password fields are masked as `••••••••` |
-| **Scroll tracking** | Debounced (800ms), captures direction + page position e.g. *"Scrolled down to view more content (now at 45% down the page)"* |
+| **Scroll tracking** | Debounced (500ms), captures direction + page position e.g. *"Scrolled down to view more content (now at 45% down the page)"* |
 | **Shadow DOM support** | Uses `composedPath()` to track clicks inside complex frameworks (Mendix, Salesforce, etc.) |
 | **Interactive Target Detection** | Hardened selector engine climbs the DOM tree to target buttons/links rather than raw icons, ensuring stable CSS selectors. |
 | **iframe support** | `all_frames: true` in manifest — works inside embedded iframes |
@@ -229,7 +229,7 @@ You can open the Steply popup at any time using your keyboard:
 | **Auto screenshot** | Captures a JPEG screenshot after every click, scroll, and input step |
 | **Red box annotation** | Highlights the exact clicked element with a red rectangle and semi-transparent fill |
 | **Accurate red box on export** | Annotation is re-drawn on an offscreen canvas before PDF/Word export so it appears in exported files too |
-| **Scroll screenshots** | Shows the page view after the user stops scrolling (no red box, captioned *"Page view after scrolling"*) |
+| **Scroll screenshots** | Shows the page view after the user stops scrolling (no red box) |
 
 ### 🗂️ Guide Management
 | Feature | Details |
@@ -255,7 +255,7 @@ You can open the Steply popup at any time using your keyboard:
 |---|---|
 | **Popup** | Start/Stop recording toggle, live status indicator, recent guides list with step count |
 | **Dashboard** | Full React app — sidebar guide list, step timeline, inline step text editing, export controls |
-| **Smart captions** | *"Red box highlights the clicked element"* for clicks, *"Page view after scrolling"* for scroll steps |
+| **Smart captions** | Descriptions are generated from the target element for clicks, and from scroll direction + page position for scroll steps |
 
 ---
 
@@ -270,10 +270,14 @@ files/
 │   ├── popup.html          # Popup HTML
 │   ├── dashboard.html      # Dashboard HTML entry point
 │   ├── Dashboard.jsx       # React dashboard — view, edit, export guides
-│   └── Dashboard.css       # Dashboard styles
+│   ├── Dashboard.css       # Dashboard styles
+│   └── privacy.html        # Privacy policy page, opened from the popup
+├── images/                 # Extension icons (16 / 48 / 128 px)
 ├── dist/                   # Built output (load THIS folder in Chrome)
 ├── manifest.json           # Chrome Extension Manifest V3 config
 ├── webpack.config.js       # Build configuration with code splitting
+├── remove-cdn-loader.js    # Webpack loader — strips a CDN URL out of jsPDF
+├── test-extension.js       # Puppeteer smoke test (node test-extension.js)
 ├── package.json            # Dependencies and build scripts
 └── README.md               # This file
 ```

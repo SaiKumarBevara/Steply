@@ -412,6 +412,38 @@ function createHUD() {
   let initialLeft = 0, initialTop = 0;
   const dragHandle = hudElement.querySelector('.steply-hud-drag-handle');
 
+  // BUG: these were attached to `document` for the lifetime of the page and
+  // never removed, so every stop/start cycle left another pair behind, each
+  // closing over an already-removed hudElement. They are now bound only for
+  // the duration of a drag gesture — drag behaviour itself is unchanged.
+  const onDragMove = (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    let left = initialLeft + dx;
+    let top = initialTop + dy;
+
+    const maxLeft = window.innerWidth - hudElement.offsetWidth - 10;
+    const maxTop = window.innerHeight - hudElement.offsetHeight - 10;
+    left = Math.max(10, Math.min(left, maxLeft));
+    top = Math.max(10, Math.min(top, maxTop));
+
+    hudElement.style.setProperty('left', left + 'px', 'important');
+    hudElement.style.setProperty('top', top + 'px', 'important');
+
+    sessionStorage.setItem('steply_hud_left', left + 'px');
+    sessionStorage.setItem('steply_hud_top', top + 'px');
+  };
+
+  const onDragEnd = () => {
+    if (isDragging) {
+      isDragging = false;
+      dragHandle.style.cursor = 'grab';
+    }
+    document.removeEventListener('mousemove', onDragMove);
+    document.removeEventListener('mouseup', onDragEnd);
+  };
+
   dragHandle.addEventListener('mousedown', (e) => {
     isDragging = true;
     dragHandle.style.cursor = 'grabbing';
@@ -420,38 +452,15 @@ function createHUD() {
     const rect = hudElement.getBoundingClientRect();
     initialLeft = rect.left;
     initialTop = rect.top;
-    
+
     hudElement.style.setProperty('bottom', 'auto', 'important');
     hudElement.style.setProperty('right', 'auto', 'important');
     hudElement.style.setProperty('left', initialLeft + 'px', 'important');
     hudElement.style.setProperty('top', initialTop + 'px', 'important');
     e.preventDefault();
-  });
 
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    let left = initialLeft + dx;
-    let top = initialTop + dy;
-    
-    const maxLeft = window.innerWidth - hudElement.offsetWidth - 10;
-    const maxTop = window.innerHeight - hudElement.offsetHeight - 10;
-    left = Math.max(10, Math.min(left, maxLeft));
-    top = Math.max(10, Math.min(top, maxTop));
-    
-    hudElement.style.setProperty('left', left + 'px', 'important');
-    hudElement.style.setProperty('top', top + 'px', 'important');
-    
-    sessionStorage.setItem('steply_hud_left', left + 'px');
-    sessionStorage.setItem('steply_hud_top', top + 'px');
-  });
-
-  document.addEventListener('mouseup', () => {
-    if (isDragging) {
-      isDragging = false;
-      dragHandle.style.cursor = 'grab';
-    }
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
   });
 
   safeAppendToBody(hudElement);

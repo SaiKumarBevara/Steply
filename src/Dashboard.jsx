@@ -4,6 +4,18 @@ import { jsPDF } from 'jspdf';
 import { Document, Packer, Paragraph, ImageRun } from 'docx';
 import './Dashboard.css';
 
+// Escapes text interpolated into an HTML string. Same rules as the exporter's
+// escapeHtml() below; declared at module scope so StepCard can use it too.
+function escapeHtmlText(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // ─── Direct IndexedDB access from Dashboard (same extension origin) ──────────
 // Extension pages share IndexedDB with the service worker — no message passing
 // needed, and no ArrayBuffer size limits to worry about.
@@ -583,8 +595,8 @@ const StepCard = ({
                       // Add HTML part so rich text editors (Gmail, Slack) paste both text and image!
                       const htmlContent = `
                         <div style="font-family: sans-serif;">
-                          <h3 style="margin:0 0 8px; color:#185FA5;">${step.action}</h3>
-                          ${step.description ? `<p style="margin:0 0 12px; color:#4b5563;">${step.description}</p>` : ''}
+                          <h3 style="margin:0 0 8px; color:#185FA5;">${escapeHtmlText(step.action)}</h3>
+                          ${step.description ? `<p style="margin:0 0 12px; color:#4b5563;">${escapeHtmlText(step.description)}</p>` : ''}
                           <img src="${dataUrl}" style="max-width:100%; border-radius:8px; border:1px solid #e5e7eb;" />
                         </div>
                       `;
@@ -839,8 +851,11 @@ export default function Dashboard() {
         alert(`Failed to update step: ${res.error}`);
         return;
       }
-      const newSteps = selectedGuide.steps.map(s => s.id === step.id ? { ...s, action: actionText } : s);
-      setSelectedGuide({ ...selectedGuide, steps: newSteps });
+      // Functional form: a stale snapshot here would re-add steps deleted in the
+      // meantime. Same reason as deleteStep below.
+      setSelectedGuide(prev => prev
+        ? { ...prev, steps: (prev.steps || []).map(s => s.id === step.id ? { ...s, action: actionText } : s) }
+        : prev);
     });
   };
 
@@ -850,8 +865,9 @@ export default function Dashboard() {
         alert(`Failed to update description: ${res.error}`);
         return;
       }
-      const newSteps = selectedGuide.steps.map(s => s.id === step.id ? { ...s, description } : s);
-      setSelectedGuide({ ...selectedGuide, steps: newSteps });
+      setSelectedGuide(prev => prev
+        ? { ...prev, steps: (prev.steps || []).map(s => s.id === step.id ? { ...s, description } : s) }
+        : prev);
     });
   };
 
@@ -861,8 +877,9 @@ export default function Dashboard() {
         alert(`Failed to update color: ${res.error}`);
         return;
       }
-      const newSteps = selectedGuide.steps.map(s => s.id === step.id ? { ...s, color } : s);
-      setSelectedGuide({ ...selectedGuide, steps: newSteps });
+      setSelectedGuide(prev => prev
+        ? { ...prev, steps: (prev.steps || []).map(s => s.id === step.id ? { ...s, color } : s) }
+        : prev);
     });
   };
 
@@ -900,6 +917,14 @@ export default function Dashboard() {
         setSelectedGuide({ ...selectedGuide, steps: newSteps });
         loadStorageStats();
       };
+
+      // A transaction that errors or aborts (quota, blocked upgrade) never fires
+      // oncomplete, so without these the write silently did nothing. Success path
+      // is untouched.
+      tx.onerror = tx.onabort = (ev) => {
+        console.error('[Dashboard] redaction transaction failed:', ev.target?.error);
+        alert("Failed to save redacted image: " + (ev.target?.error?.message || 'storage error'));
+      };
     } catch (e) {
       alert("Failed to save redacted image: " + e.message);
     }
@@ -912,9 +937,18 @@ export default function Dashboard() {
           alert(`Failed to delete step: ${res.error}`);
           return;
         }
-        const newSteps = selectedGuide.steps.filter(s => s.id !== step.id);
-        setSelectedGuide({ ...selectedGuide, steps: newSteps });
-        loadGuides(); // refresh sidebar count
+        // Rebuild from `prev`, not from the `selectedGuide` this callback closed
+        // over at render time. With the stale snapshot, deleting two steps before
+        // a re-render landed resurrected the first one — a card whose record and
+        // screenshot blob were already gone, so it rendered blank — and left
+        // stepCount untouched, so the sidebar and the header disagreed.
+        setSelectedGuide(prev => {
+          if (!prev) return prev;
+          const newSteps = (prev.steps || []).filter(s => s.id !== step.id);
+          return { ...prev, steps: newSteps, stepCount: newSteps.length };
+        });
+        loadGuides();        // refresh sidebar count
+        loadStorageStats();  // the screenshot blob is gone too
       });
     }
   };
@@ -973,6 +1007,13 @@ export default function Dashboard() {
           updatedAt: new Date().toISOString() 
         });
         loadGuides();
+      };
+
+      // Without these a failed transaction left the on-screen order unchanged and
+      // said nothing; the reorder simply never happened.
+      tx.onerror = tx.onabort = (ev) => {
+        console.error('[Dashboard] reorder transaction failed:', ev.target?.error);
+        alert("Failed to reorder steps: " + (ev.target?.error?.message || 'storage error'));
       };
     } catch (e) {
       alert("Failed to reorder steps: " + e.message);
@@ -1049,6 +1090,15 @@ export default function Dashboard() {
           loadGuides();
           loadStorageStats();
         };
+        tx2.onerror = tx2.onabort = (ev) => {
+          console.error('[Dashboard] duplicate re-sequence transaction failed:', ev.target?.error);
+          alert("Step was duplicated, but re-ordering failed: " + (ev.target?.error?.message || 'storage error'));
+        };
+      };
+
+      tx.onerror = tx.onabort = (ev) => {
+        console.error('[Dashboard] duplicate transaction failed:', ev.target?.error);
+        alert("Failed to duplicate step: " + (ev.target?.error?.message || 'storage error'));
       };
     } catch (e) {
       alert("Failed to duplicate step: " + e.message);
@@ -1107,6 +1157,15 @@ export default function Dashboard() {
           });
           loadGuides();
         };
+        tx2.onerror = tx2.onabort = (ev) => {
+          console.error('[Dashboard] insert re-sequence transaction failed:', ev.target?.error);
+          alert("Note card was added, but re-ordering failed: " + (ev.target?.error?.message || 'storage error'));
+        };
+      };
+
+      tx.onerror = tx.onabort = (ev) => {
+        console.error('[Dashboard] insert transaction failed:', ev.target?.error);
+        alert("Failed to insert blank step: " + (ev.target?.error?.message || 'storage error'));
       };
     } catch (e) {
       alert("Failed to insert blank step: " + e.message);

@@ -1,4 +1,5 @@
 node_modules/
 dist/
+test-artifacts/
 .DS_Store
 *.log
