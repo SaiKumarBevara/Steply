@@ -139,6 +139,164 @@ function drawTimestampOnCanvas(canvas, ctx, timestamp, position = 'bottom_right'
   ctx.restore();
 }
 
+// Draws the automatic highlight box around the recorded element. Was duplicated
+// verbatim in getAnnotatedDataUrl() and ScreenshotCanvas.drawCanvas(); the manual
+// annotation editor is a third site that needs it, so it lives in one place now.
+// Behaviour is unchanged from both former copies.
+function drawHighlightBox(ctx, img, step, colorKey) {
+  const palette = HIGHLIGHT_COLORS[colorKey];
+  const ed = step.elementData;
+  if (!palette || !ed) return;
+  const sx = img.width / ed.windowWidth, sy = img.height / ed.windowHeight;
+  const x  = ed.x * sx, y = ed.y * sy;
+  const w  = (ed.width || 120) * sx, h = (ed.height || 60) * sy;
+  ctx.strokeStyle = palette.stroke; ctx.lineWidth = 4;
+  ctx.strokeRect(x - w/2, y - h/2, w, h);
+  ctx.fillStyle = palette.fill;
+  ctx.fillRect(x - w/2, y - h/2, w, h);
+}
+
+// ─── Manual annotations (arrows, boxes, text, numbered badges) ────────────────
+// Stored on the step record as step.annotations and drawn at render time — the
+// screenshot blob is never rewritten, so annotations stay editable and a step
+// without the field simply draws nothing (no migration, no DB version bump).
+// Coordinates are normalised 0..1 against the image so markup lands correctly
+// whatever the capture's pixel size.
+const ANNOT_COLORS = ['#FF3B30', '#FF9500', '#34C759', '#007AFF', '#1C1C1E', '#FFFFFF'];
+const ANNOT_DEFAULT_TEXT_SIZE = 0.022; // fraction of image height
+
+// Pen weights scale with the capture so markup reads the same on a 1280px and a
+// 2560px screenshot. Shared by the renderer and the hit-test geometry below so the
+// two can't drift out of sync.
+function annotationMetrics(W) {
+  return {
+    stroke:  Math.max(2,  W * 0.0022),
+    headLen: Math.max(10, W * 0.011),
+    radius:  Math.max(10, W * 0.009),
+  };
+}
+const ANNOT_TOOLS = [
+  { id: 'arrow',  icon: 'ti-arrow-up-right',  title: 'Arrow — drag to draw' },
+  { id: 'rect',   icon: 'ti-square',          title: 'Box — drag to draw' },
+  { id: 'text',   icon: 'ti-typography',      title: 'Text label — click to place' },
+  { id: 'badge',  icon: 'ti-circle-number-1', title: 'Numbered badge — click to place' },
+  { id: 'blur',   icon: 'ti-shield-lock',     title: 'Blur sensitive info — drag over it' },
+  { id: 'select', icon: 'ti-pointer',         title: 'Select — click a shape, then press Delete' },
+];
+
+// Irreversibly blurs regions of a canvas. Lifted unchanged from the old standalone
+// RedactionWorkspace so redaction behaviour is identical: density-aware radius and
+// pass count, self-compositing to build opacity on small areas (small text needs
+// more passes or it stays readable), plus the thin 'locked' border.
+// Must run before annotations are drawn, or the self-composite smears them too.
+function applyBlurRects(ctx, canvas, rects) {
+  if (!Array.isArray(rects) || !rects.length) return;
+  for (const r of rects) {
+    const x = r.x * canvas.width,  y = r.y * canvas.height;
+    const w = r.w * canvas.width,  h = r.h * canvas.height;
+    if (w < 1 || h < 1) continue;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    const isSmall = w < 40 || h < 40;
+    const radius  = isSmall ? 8 : 16;
+    const passes  = isSmall ? 8 : 4;
+    ctx.filter = `blur(${radius}px)`;
+    for (let i = 0; i < passes; i++) ctx.drawImage(canvas, x, y, w, h, x, y, w, h);
+    ctx.restore();
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
+  }
+}
+
+// Axis-aligned box around an annotation, in canvas pixels. Used for click
+// hit-testing and for the selection outline — deliberately approximate for text
+// (no ctx.measureText) since it only has to be close enough to click.
+function annotationBounds(a, W, H) {
+  if (a.type === 'arrow') {
+    const x1 = a.x1 * W, y1 = a.y1 * H, x2 = a.x2 * W, y2 = a.y2 * H;
+    return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+  }
+  if (a.type === 'rect' || a.type === 'blur') return { x: a.x * W, y: a.y * H, w: a.w * W, h: a.h * H };
+  if (a.type === 'text') {
+    const size = Math.max(12, (a.size || ANNOT_DEFAULT_TEXT_SIZE) * H);
+    return { x: a.x * W, y: a.y * H, w: Math.max(size, (a.text || '').length * size * 0.6), h: size * 1.2 };
+  }
+  const r = annotationMetrics(W).radius; // badge
+  return { x: a.x * W - r, y: a.y * H - r, w: r * 2, h: r * 2 };
+}
+
+function newAnnotationId() {
+  return 'an_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function drawAnnotations(ctx, canvas, annotations) {
+  if (!Array.isArray(annotations) || !annotations.length) return;
+  const W = canvas.width, H = canvas.height;
+  const { stroke, headLen, radius } = annotationMetrics(W);
+  let badgeNum = 0;
+
+  for (const a of annotations) {
+    if (!a || !a.type) continue;
+    const color = a.color || ANNOT_COLORS[0];
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle   = color;
+    ctx.lineWidth   = stroke;
+    ctx.lineJoin    = 'round';
+    ctx.lineCap     = 'round';
+
+    if (a.type === 'arrow') {
+      const x1 = a.x1 * W, y1 = a.y1 * H, x2 = a.x2 * W, y2 = a.y2 * H;
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+      // Stop the shaft short of the tip so the head reads as solid.
+      const bx = x2 - Math.cos(angle) * headLen * 0.8;
+      const by = y2 - Math.sin(angle) * headLen * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - Math.cos(angle - 0.4) * headLen, y2 - Math.sin(angle - 0.4) * headLen);
+      ctx.lineTo(x2 - Math.cos(angle + 0.4) * headLen, y2 - Math.sin(angle + 0.4) * headLen);
+      ctx.closePath();
+      ctx.fill();
+    } else if (a.type === 'rect') {
+      ctx.strokeRect(a.x * W, a.y * H, a.w * W, a.h * H);
+    } else if (a.type === 'text') {
+      const size = Math.max(12, (a.size || ANNOT_DEFAULT_TEXT_SIZE) * H);
+      ctx.font = `600 ${size}px "DM Sans", sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      // Outline the glyphs so light text stays legible on light screenshots.
+      ctx.lineWidth = Math.max(2, size * 0.14);
+      ctx.strokeStyle = color === '#FFFFFF' ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.75)';
+      ctx.strokeText(a.text || '', a.x * W, a.y * H);
+      ctx.fillText(a.text || '', a.x * W, a.y * H);
+    } else if (a.type === 'badge') {
+      badgeNum += 1;
+      const cx = a.x * W, cy = a.y * H;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = Math.max(2, radius * 0.12);
+      ctx.stroke();
+      ctx.fillStyle = color === '#FFFFFF' ? '#1C1C1E' : '#FFFFFF';
+      ctx.font = `700 ${radius * 1.25}px "DM Sans", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(badgeNum), cx, cy + radius * 0.05);
+    }
+    ctx.restore();
+  }
+}
+
 async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosition, timestampStyle) {
   const screenshotResult = await resolveScreenshotUrl(step);
   if (!screenshotResult) return null;
@@ -150,18 +308,12 @@ async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosit
     img.onload = () => {
       canvas.width = img.width; canvas.height = img.height;
       ctx.drawImage(img, 0, 0);
-      const palette = HIGHLIGHT_COLORS[colorKey];
-      const ed = step.elementData;
-      if (palette && ed) {
-        const sx = img.width / ed.windowWidth, sy = img.height / ed.windowHeight;
-        const x  = ed.x * sx, y = ed.y * sy;
-        const w  = (ed.width || 120) * sx, h = (ed.height || 60) * sy;
-        ctx.strokeStyle = palette.stroke; ctx.lineWidth = 4;
-        ctx.strokeRect(x - w/2, y - h/2, w, h);
-        ctx.fillStyle = palette.fill;
-        ctx.fillRect(x - w/2, y - h/2, w, h);
-      }
-      
+      drawHighlightBox(ctx, img, step, colorKey);
+      // Manual markup sits above the automatic highlight box and below the
+      // timestamp. Every export and the clipboard copy go through this function,
+      // so this one call is what carries annotations into PDF/Word/HTML/MD/JSON.
+      drawAnnotations(ctx, canvas, step.annotations);
+
       if (showTimestamp) {
         drawTimestampOnCanvas(canvas, ctx, step.timestamp, timestampPosition, timestampStyle);
       }
@@ -233,19 +385,9 @@ function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = true, 
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
 
-    const palette = HIGHLIGHT_COLORS[color];
-    const ed = step.elementData;
-    if (palette && ed) {
-      const sx = img.width  / ed.windowWidth;
-      const sy = img.height / ed.windowHeight;
-      const x  = ed.x * sx, y = ed.y * sy;
-      const w  = (ed.width  || 120) * sx;
-      const h  = (ed.height ||  60) * sy;
-      ctx.strokeStyle = palette.stroke; ctx.lineWidth = 4;
-      ctx.strokeRect(x - w/2, y - h/2, w, h);
-      ctx.fillStyle = palette.fill;
-      ctx.fillRect(x - w/2, y - h/2, w, h);
-    }
+    drawHighlightBox(ctx, img, step, color);
+    // Same order as getAnnotatedDataUrl() so the preview matches the export.
+    drawAnnotations(ctx, canvas, step.annotations);
 
     if (showTime) {
       drawTimestampOnCanvas(canvas, ctx, step.timestamp, position, style);
@@ -255,27 +397,64 @@ function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = true, 
   return <canvas ref={canvasRef} style={{ maxWidth: '100%', display: 'block' }} />;
 }
 
-// ─── Redaction Workspace (Premium Privacy Feature) ──────────────────────────
-function RedactionWorkspace({ step, onSave, onCancel }) {
+// ─── Step Editor: annotations + redaction in one workspace ───────────────────
+// Holds both kinds of edit in a single `edits` list so undo/delete/clear work
+// across them, but they are saved very differently:
+//   • arrows / boxes / text / badges → step.annotations, drawn at display time.
+//     Non-destructive, so they stay editable and the bitmap is never rewritten.
+//   • blur → flattened into the stored screenshot on save. Redaction MUST be
+//     destructive; keeping it as a display-time overlay would leave the
+//     unobscured pixels sitting in IndexedDB and the privacy claim would be false.
+// Inside the editor blur is still undoable, because nothing is committed until
+// Apply & Save.
+function StepEditorWorkspace({
+  step,
+  highlightColor = 'red',
+  showTimestamp = true,
+  timestampPosition = 'bottom_right',
+  timestampStyle = 'minimal_black',
+  onSave,
+  onCancel,
+}) {
   const canvasRef = useRef(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [startPos, setStartPos]   = useState(null);
-  const [currentRect, setCurrentRect] = useState(null);
-  const [img, setImg] = useState(null);
+  const [img, setImg]         = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError]     = useState(null);
 
+  const [tool, setTool]   = useState('arrow');
+  const [color, setColor] = useState(ANNOT_COLORS[0]);
+  // One ordered list of every edit. Derived views below keep draw order and badge
+  // numbering stable, and let a single undo stack cover both kinds.
+  const [edits, setEdits] = useState(
+    () => (Array.isArray(step.annotations) ? step.annotations : [])
+  );
+  const [draft, setDraft]           = useState(null);     // shape mid-drag
+  const [selectedId, setSelectedId] = useState(null);
+  const [textDraft, setTextDraft]   = useState(null);     // { x, y, color, value }
+  const [saving, setSaving]         = useState(false);
+  const isDrawing = useRef(false);
+  const startRef  = useRef(null);
+  const textInputRef = useRef(null);
+  const textOpen = !!textDraft;
+
+  const annotations = edits.filter(e => e.type !== 'blur');
+  const blurRects   = edits.filter(e => e.type === 'blur');
+
+  // Blur has to be written back into the screenshot record, which legacy steps
+  // (base64 in step.screenshot, no screenshotId) don't have. Annotations still
+  // work on those, so disable just this one tool rather than the whole editor.
+  const canBlur = !!step.screenshotId;
+
+  // Load the screenshot once. isMounted stops
+  // a late onload from touching an unmounted component, revokeFn frees the blob URL.
   useEffect(() => {
     let revokeFn = null;
     let isMounted = true;
     (async () => {
-      console.log("[Steply] Loading screenshot for redaction:", step.id);
       const result = await resolveScreenshotUrl(step);
       if (!result || !isMounted) {
-        if (isMounted) {
-          setError("Screenshot not found for this step.");
-          setLoading(false);
-        }
+        if (isMounted) { setError('Screenshot not found for this step.'); setLoading(false); }
+        if (result) result.revoke();
         return;
       }
       revokeFn = result.revoke;
@@ -284,144 +463,344 @@ function RedactionWorkspace({ step, onSave, onCancel }) {
         if (!isMounted) return;
         setImg(image);
         setLoading(false);
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        canvas.width = image.width || 1280;
-        canvas.height = image.height || 720;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(image, 0, 0);
       };
-      image.onerror = (e) => {
+      image.onerror = () => {
         if (!isMounted) return;
-        setError("Failed to load image.");
+        setError('Failed to load image.');
         setLoading(false);
       };
       image.src = result.url;
     })();
-    return () => { 
-      isMounted = false;
-      if (revokeFn) revokeFn(); 
-    };
+    return () => { isMounted = false; if (revokeFn) revokeFn(); };
   }, [step.id]);
 
+  // Repaint the whole scene from the pristine image on every change. The old
+  // redaction editor baked each blur into the bitmap as it was drawn, which is
+  // why it could never be undone; rebuilding from scratch makes every edit
+  // reversible right up until Apply & Save. Blur is re-derived from the clean
+  // image each pass, so repainting never compounds its intensity.
   useEffect(() => {
-    const handleEsc = (e) => {
-      if (e.key === 'Escape') onCancel();
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [onCancel]);
+    const canvas = canvasRef.current;
+    if (!canvas || !img) return;
+    const ctx = canvas.getContext('2d');
+    canvas.width  = img.width  || 1280;
+    canvas.height = img.height || 720;
+    ctx.drawImage(img, 0, 0);
+    // Blur first: it self-composites the canvas, so anything drawn earlier would
+    // get smeared into it.
+    applyBlurRects(ctx, canvas, blurRects);
+    drawHighlightBox(ctx, img, step, highlightColor);
+    drawAnnotations(ctx, canvas, annotations);
+    if (draft) {
+      if (draft.type === 'blur') {
+        // Preview the blur region as an outline rather than blurring live — much
+        // cheaper than re-running the filter on every mousemove.
+        ctx.save();
+        ctx.strokeStyle = '#185FA5';
+        ctx.fillStyle   = 'rgba(24,95,165,0.12)';
+        ctx.lineWidth   = Math.max(2, canvas.width * 0.002);
+        const bx = draft.x * canvas.width,  by = draft.y * canvas.height;
+        const bw = draft.w * canvas.width,  bh = draft.h * canvas.height;
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.restore();
+      } else {
+        drawAnnotations(ctx, canvas, [draft]);
+      }
+    }
+    if (showTimestamp) {
+      drawTimestampOnCanvas(canvas, ctx, step.timestamp, timestampPosition, timestampStyle);
+    }
 
+    // Dashed outline so the user can see what Delete will remove.
+    const sel = edits.find(a => a.id === selectedId);
+    if (sel) {
+      const b = annotationBounds(sel, canvas.width, canvas.height);
+      const pad = Math.max(6, canvas.width * 0.006);
+      ctx.save();
+      ctx.strokeStyle = '#007AFF';
+      ctx.lineWidth = Math.max(2, canvas.width * 0.002);
+      ctx.setLineDash([pad, pad * 0.7]);
+      ctx.strokeRect(b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2);
+      ctx.restore();
+    }
+  }, [img, edits, draft, selectedId, highlightColor, showTimestamp, timestampPosition, timestampStyle]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Focus the label input when it opens. Keyed on open/closed rather than on the
+  // draft object, so it doesn't re-focus (and reset the caret) on every keystroke.
+  // Replaces autoFocus, which fired before the browser's default mousedown action
+  // and so lost the focus it had just taken.
+  useEffect(() => {
+    if (textOpen && textInputRef.current) textInputRef.current.focus();
+  }, [textOpen]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!e.key) return; // guards the toLowerCase() below on odd key events
+      if (e.key === 'Escape') {
+        // Escape dismisses an open text input first; only then does it close the editor.
+        if (textDraft) { setTextDraft(null); return; }
+        onCancel();
+        return;
+      }
+      if (textDraft) return; // don't steal keys while a label is being typed
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
+        e.preventDefault();
+        setEdits(prev => prev.filter(a => a.id !== selectedId));
+        setSelectedId(null);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        setEdits(prev => prev.slice(0, -1));
+        setSelectedId(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel, textDraft, selectedId]);
+
+  // Client coords → canvas pixels, clamped.
   const getCanvasPos = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    
-    // Clamp to canvas boundaries for high precision
-    let x = (e.clientX - rect.left) * scaleX;
-    let y = (e.clientY - rect.top) * scaleY;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top)  * scaleY;
     return {
       x: Math.max(0, Math.min(x, canvas.width)),
-      y: Math.max(0, Math.min(y, canvas.height))
+      y: Math.max(0, Math.min(y, canvas.height)),
     };
   };
 
+  // Shapes are stored normalised so they land correctly at any capture size.
+  const toNorm = (pos) => {
+    const canvas = canvasRef.current;
+    return { x: pos.x / (canvas?.width || 1), y: pos.y / (canvas?.height || 1) };
+  };
+
   const handleMouseDown = (e) => {
-    setIsDrawing(true);
-    setStartPos(getCanvasPos(e));
+    // Without this the browser's default mousedown action moves focus off the
+    // text input we are about to mount (a canvas isn't focusable, so focus falls
+    // to body), which used to close the label box the instant it appeared. Also
+    // stops stray text/image selection while dragging a shape.
+    e.preventDefault();
+
+    // A label already being typed is committed by this click rather than
+    // swallowed by it, so consecutive labels need no extra click.
+    if (textDraft) {
+      const pending = textDraftToAnnotation();
+      if (pending) setEdits(prev => [...prev, pending]);
+      setTextDraft(null);
+    }
+
+    const pos = getCanvasPos(e);
+    const n   = toNorm(pos);
+
+    if (tool === 'select') {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      // Topmost first, so the shape drawn last wins an overlap.
+      const hit = [...edits].reverse().find(a => {
+        const b = annotationBounds(a, canvas.width, canvas.height);
+        const pad = Math.max(8, canvas.width * 0.006);
+        return pos.x >= b.x - pad && pos.x <= b.x + b.w + pad
+            && pos.y >= b.y - pad && pos.y <= b.y + b.h + pad;
+      });
+      setSelectedId(hit ? hit.id : null);
+      return;
+    }
+
+    setSelectedId(null);
+
+    if (tool === 'blur' && !canBlur) return;
+
+    if (tool === 'badge') {
+      setEdits(prev => [...prev, { id: newAnnotationId(), type: 'badge', color, x: n.x, y: n.y }]);
+      return;
+    }
+    if (tool === 'text') {
+      setTextDraft({ x: n.x, y: n.y, color, value: '' });
+      return;
+    }
+    isDrawing.current = true;
+    startRef.current  = n;
   };
 
   const handleMouseMove = (e) => {
-    if (!isDrawing) return;
-    const pos = getCanvasPos(e);
-    setCurrentRect({
-      x: Math.min(startPos.x, pos.x),
-      y: Math.min(startPos.y, pos.y),
-      w: Math.abs(startPos.x - pos.x),
-      h: Math.abs(startPos.y - pos.y)
+    if (!isDrawing.current || !startRef.current) return;
+    const n = toNorm(getCanvasPos(e));
+    const s = startRef.current;
+    if (tool === 'arrow') {
+      setDraft({ id: 'draft', type: 'arrow', color, x1: s.x, y1: s.y, x2: n.x, y2: n.y });
+      return;
+    }
+    // Box and blur share the same drag-rectangle gesture.
+    setDraft({
+      id: 'draft', type: tool === 'blur' ? 'blur' : 'rect', color,
+      x: Math.min(s.x, n.x), y: Math.min(s.y, n.y),
+      w: Math.abs(s.x - n.x), h: Math.abs(s.y - n.y),
     });
   };
 
   const handleMouseUp = () => {
-    if (!isDrawing || !currentRect) { setIsDrawing(false); return; }
-    setIsDrawing(false);
-    
-    // Apply Smart Blur: Adjust radius and passes based on selection size
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const { x, y, w, h } = currentRect;
-    
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(x, y, w, h);
-    ctx.clip();
-    
-    // For small areas, we use a smaller radius but MORE passes to ensure opacity
-    const isSmall = w < 40 || h < 40;
-    const radius  = isSmall ? 8 : 16;
-    const passes  = isSmall ? 8 : 4;
-    
-    ctx.filter = `blur(${radius}px)`;
-    for(let i=0; i<passes; i++) {
-        // We draw the canvas onto itself. 
-        // For small areas, this accumulation creates a solid, opaque blur.
-        ctx.drawImage(canvas, x, y, w, h, x, y, w, h);
-    }
-    ctx.restore();
-    
-    // Draw a subtle 'Locked' indicator border
-    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x, y, w, h);
-    
-    setCurrentRect(null);
+    if (!isDrawing.current) return;
+    isDrawing.current = false;
+    startRef.current  = null;
+    const d = draft;
+    setDraft(null);
+    if (!d) return;
+    // Discard accidental clicks that produced a degenerate shape.
+    const span = d.type === 'arrow'
+      ? Math.hypot(d.x2 - d.x1, d.y2 - d.y1)
+      : Math.max(d.w, d.h);
+    if (span < 0.015) return;
+    setEdits(prev => [...prev, { ...d, id: newAnnotationId() }]);
   };
 
-  const handleSave = () => {
-    const canvas = canvasRef.current;
-    canvas.toBlob((blob) => {
-      onSave(step, blob);
-    }, 'image/jpeg', 0.9);
+  const textDraftToAnnotation = () => {
+    const value = (textDraft?.value || '').trim();
+    if (!value) return null;
+    return {
+      id: newAnnotationId(), type: 'text', color: textDraft.color,
+      x: textDraft.x, y: textDraft.y, text: value, size: ANNOT_DEFAULT_TEXT_SIZE,
+    };
+  };
+
+  const commitTextDraft = () => {
+    if (!textDraft) return;
+    const a = textDraftToAnnotation();
+    if (a) setEdits(prev => [...prev, a]);
+    setTextDraft(null);
+  };
+
+  // Renders the blurred screenshot that will replace the stored bitmap. Only the
+  // image and the blur regions go in — annotations are deliberately excluded,
+  // because they are drawn again at display time and baking them here would
+  // double them up. Same format and quality the old redaction editor wrote.
+  const flattenBlur = () => new Promise((resolve) => {
+    const c  = document.createElement('canvas');
+    c.width  = img.width  || 1280;
+    c.height = img.height || 720;
+    const cx = c.getContext('2d');
+    cx.drawImage(img, 0, 0);
+    applyBlurRects(cx, c, blurRects);
+    c.toBlob((blob) => resolve(blob), 'image/jpeg', 0.9);
+  });
+
+  // Apply must not drop a label the user is still typing. Clicking the button
+  // blurs the input, but relying on that blur's state update to land before this
+  // click handler reads `edits` would be a race, so fold it in explicitly. If the
+  // blur did land first the draft is already null, so either order yields exactly
+  // one copy.
+  const handleApply = async () => {
+    if (saving) return;
+    const pending = textDraftToAnnotation();
+    const finalAnnotations = pending ? [...annotations, pending] : annotations;
+    setSaving(true);
+
+    let blob = null;
+    if (blurRects.length) {
+      blob = await flattenBlur();
+      if (!blob) {
+        setSaving(false);
+        alert('Could not render the blurred screenshot. Nothing was saved — please try again.');
+        return;
+      }
+    }
+
+    // On success the parent unmounts this editor, so only reset on failure.
+    const ok = await onSave(step, finalAnnotations, blob);
+    if (!ok) setSaving(false);
   };
 
   return (
     <div className="redact-overlay">
       <div className="redact-header">
         <div className="redact-info">
-          <i className="ti ti-shield-lock"></i>
-          <div>
-            <h3>Redaction Mode</h3>
-            <p>Drag to blur sensitive information like emails, names, or keys.</p>
+          <i className="ti ti-pencil"></i>
+          <div className="redact-info-text">
+            <h3>Edit Screenshot</h3>
+            <p>Drag for arrows, boxes, blur · Click for text and badges</p>
           </div>
         </div>
+        <div className="annot-toolbar">
+          {ANNOT_TOOLS.map(t => (
+            <button
+              key={t.id}
+              className={`annot-tool ${tool === t.id ? 'active' : ''} ${t.id === 'blur' ? 'annot-tool-blur' : ''}`}
+              title={t.id === 'blur' && !canBlur
+                ? 'Blur is unavailable on this older step — its screenshot is stored in an earlier format'
+                : t.title}
+              disabled={t.id === 'blur' && !canBlur}
+              onClick={() => { setTool(t.id); setSelectedId(null); }}
+            ><i className={`ti ${t.icon}`}></i></button>
+          ))}
+          <span className="annot-divider" />
+          {ANNOT_COLORS.map(c => (
+            <button
+              key={c}
+              className={`annot-swatch ${color === c ? 'active' : ''}`}
+              style={{ background: c }}
+              title={`Use ${c}`}
+              onClick={() => setColor(c)}
+            />
+          ))}
+          <span className="annot-divider" />
+          <button
+            className="annot-tool"
+            title="Undo (Ctrl+Z)"
+            disabled={!edits.length}
+            onClick={() => { setEdits(prev => prev.slice(0, -1)); setSelectedId(null); }}
+          ><i className="ti ti-arrow-back-up"></i></button>
+          <button
+            className="annot-tool"
+            title="Remove all edits"
+            disabled={!edits.length}
+            onClick={() => { setEdits([]); setSelectedId(null); }}
+          ><i className="ti ti-trash"></i></button>
+        </div>
         <div className="redact-actions">
-          <button className="btn-secondary" onClick={onCancel}>Cancel</button>
-          <button className="btn-primary" onClick={handleSave}>Apply & Save</button>
+          {blurRects.length > 0 && (
+            <span className="annot-blur-warning" title={`${blurRects.length} blur region${blurRects.length > 1 ? 's' : ''} will be flattened into the screenshot and cannot be undone after saving`}>
+              <i className="ti ti-alert-triangle"></i>
+              {blurRects.length} blur{blurRects.length > 1 ? 's' : ''} · permanent
+            </span>
+          )}
+          <button className="btn-secondary" onClick={onCancel} disabled={saving}>Cancel</button>
+          <button className="btn-primary" onClick={handleApply} disabled={saving}>
+            {saving ? 'Saving…' : 'Apply & Save'}
+          </button>
         </div>
       </div>
       <div className="redact-canvas-container">
         {loading && <div className="redact-status"><i className="ti ti-loader rotate"></i> Loading...</div>}
         {error && <div className="redact-status error"><i className="ti ti-alert-circle"></i> {error}</div>}
-        
+
         <div className="redact-canvas-wrapper" style={{ position: 'relative', display: (loading || error) ? 'none' : 'inline-block' }}>
-          <canvas 
+          <canvas
             ref={canvasRef}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
-            className={`redact-canvas ${isDrawing ? 'drawing' : ''}`}
+            onMouseLeave={handleMouseUp}
+            className={`redact-canvas ${tool === 'select' ? 'annot-select' : 'drawing'}`}
           />
-          {currentRect && (
-            <div 
-              className="redact-guide-rect"
+          {textDraft && (
+            <input
+              ref={textInputRef}
+              className="annot-text-input"
+              value={textDraft.value}
+              placeholder="Type a label, then press Enter"
               style={{
-                left: (currentRect.x / (canvasRef.current?.width || 1)) * 100 + '%',
-                top: (currentRect.y / (canvasRef.current?.height || 1)) * 100 + '%',
-                width: (currentRect.w / (canvasRef.current?.width || 1)) * 100 + '%',
-                height: (currentRect.h / (canvasRef.current?.height || 1)) * 100 + '%'
+                left: textDraft.x * 100 + '%',
+                top:  textDraft.y * 100 + '%',
+                color: textDraft.color,
               }}
+              onChange={(e) => setTextDraft(d => ({ ...d, value: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitTextDraft(); } }}
             />
           )}
         </div>
@@ -430,9 +809,9 @@ function RedactionWorkspace({ step, onSave, onCancel }) {
   );
 }
 
-const StepCard = ({ 
-  step, 
-  index, 
+const StepCard = ({
+  step,
+  index,
   updateStepText, 
   updateStepDescription, 
   deleteStep, 
@@ -441,8 +820,8 @@ const StepCard = ({
   showTimestamp, 
   timestampPosition, 
   timestampStyle, 
-  onRedact, 
-  duplicateStep, 
+  onAnnotate,
+  duplicateStep,
   draggingIndex, 
   setDraggingIndex, 
   handleReorderSteps 
@@ -551,13 +930,16 @@ const StepCard = ({
               <i className="ti ti-trash" style={{ fontSize: '13px' }}></i>
             </button>
             {step.stepType !== 'note' && (
-              <button 
-                className="btn-secondary" 
-                style={{ padding: '4px' }} 
-                onClick={() => onRedact(step)}
-                title="Redact sensitive info"
+              <button
+                className="btn-secondary"
+                style={{ padding: '4px', position: 'relative' }}
+                onClick={() => onAnnotate(step)}
+                title="Edit screenshot — arrows, boxes, text, numbers, blur"
               >
-                <i className="ti ti-shield-lock" style={{ fontSize: '13px' }}></i>
+                <i className="ti ti-pencil" style={{ fontSize: '13px', color: '#D9480F' }}></i>
+                {Array.isArray(step.annotations) && step.annotations.length > 0 && (
+                  <span className="annot-count">{step.annotations.length}</span>
+                )}
               </button>
             )}
             <button 
@@ -678,7 +1060,8 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery]       = useState('');
   const [isRecording, setIsRecording]       = useState(false);
   const [activeGuideId, setActiveGuideId]   = useState(null);
-  const [redactingStep, setRedactingStep]   = useState(null);
+  // One editor now covers annotations and redaction, so one piece of state.
+  const [editingStep, setEditingStep]       = useState(null);
 
   // Premium Enhancements States
   const [draggingIndex, setDraggingIndex] = useState(null);
@@ -883,11 +1266,15 @@ export default function Dashboard() {
     });
   };
 
-  const handleSaveRedaction = async (step, blob) => {
+  // Flattens a blurred bitmap over the step's stored screenshot. Same IndexedDB
+  // work the old standalone redaction save did — storageBytes delta, updatedAt —
+  // but it now reports success instead of driving the UI, so the combined save
+  // below can sequence it ahead of the annotation write.
+  const writeRedactedScreenshot = (step, blob) => new Promise(async (resolve) => {
     try {
       const db = await openDashboardDb();
       const tx = db.transaction(['screenshots', 'guides'], 'readwrite');
-      
+
       const ssStore = tx.objectStore('screenshots');
       const oldSs = await new Promise(r => {
         const req = ssStore.get(step.screenshotId);
@@ -902,32 +1289,65 @@ export default function Dashboard() {
         const req = guideStore.get(selectedGuide.id);
         req.onsuccess = (e) => r(e.target.result);
       });
-      
+
       if (guide) {
         guide.storageBytes = (guide.storageBytes || 0) + sizeDiff;
         guide.updatedAt = new Date().toISOString();
         guideStore.put(guide);
       }
 
-      tx.oncomplete = () => {
-        setRedactingStep(null);
-        const newSteps = selectedGuide.steps.map(s => 
-          s.id === step.id ? { ...s, _refresh: Date.now() } : s
-        );
-        setSelectedGuide({ ...selectedGuide, steps: newSteps });
-        loadStorageStats();
-      };
+      tx.oncomplete = () => resolve(true);
 
       // A transaction that errors or aborts (quota, blocked upgrade) never fires
-      // oncomplete, so without these the write silently did nothing. Success path
-      // is untouched.
+      // oncomplete, so without these the write silently did nothing.
       tx.onerror = tx.onabort = (ev) => {
         console.error('[Dashboard] redaction transaction failed:', ev.target?.error);
-        alert("Failed to save redacted image: " + (ev.target?.error?.message || 'storage error'));
+        alert('Failed to save redacted image: ' + (ev.target?.error?.message || 'storage error'));
+        resolve(false);
       };
     } catch (e) {
-      alert("Failed to save redacted image: " + e.message);
+      alert('Failed to save redacted image: ' + e.message);
+      resolve(false);
     }
+  });
+
+  // One save for both kinds of edit the step editor produces.
+  //
+  // Blur goes first because it is the destructive half: if flattening the bitmap
+  // fails we stop without touching anything, so the editor stays open with the
+  // user's work intact rather than reporting success on a redaction that never
+  // landed. Annotations are a plain field on the step record and can't lose a
+  // capture. _refresh is bumped so the step list's key changes and
+  // ScreenshotCanvas remounts to redraw — the mechanism redaction already used.
+  // Resolves true only once everything landed, so the editor can re-enable its
+  // buttons on failure instead of sitting disabled on "Saving…" forever.
+  const handleSaveStepEdits = async (step, annotations, blurBlob) => {
+    if (blurBlob) {
+      const ok = await writeRedactedScreenshot(step, blurBlob);
+      if (!ok) return false;
+      loadStorageStats(); // the stored screenshot changed size
+    }
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { action: 'updateStepAnnotations', stepId: step.id, annotations },
+        (res) => {
+          if (res?.error) {
+            alert(`Failed to save annotations: ${res.error}`);
+            resolve(false);
+            return;
+          }
+          setEditingStep(null);
+          setSelectedGuide(prev => prev
+            ? {
+                ...prev,
+                steps: (prev.steps || []).map(s =>
+                  s.id === step.id ? { ...s, annotations, _refresh: Date.now() } : s),
+              }
+            : prev);
+          resolve(true);
+        }
+      );
+    });
   };
 
   const deleteStep = (step) => {
@@ -1407,6 +1827,9 @@ export default function Dashboard() {
         description: step.description || "",
         stepType: step.stepType || "click",
         elementData: step.elementData || null,
+        // screenshotDataUrl below already has the markup rendered into it; the raw
+        // array is emitted too so the bundle stays round-trippable.
+        annotations: Array.isArray(step.annotations) ? step.annotations : [],
         color: step.color || null,
         timestamp: step.timestamp || new Date().toISOString(),
         screenshotId: step.screenshotId || null,
@@ -1761,6 +2184,7 @@ export default function Dashboard() {
           description: step.description || "",
           stepType: step.stepType || "click",
           elementData: step.elementData || null,
+          annotations: Array.isArray(step.annotations) ? step.annotations : [],
           color: step.color || null,
           timestamp: step.timestamp || new Date().toISOString(),
           screenshotId: step.screenshotId || null,
@@ -2580,7 +3004,7 @@ export default function Dashboard() {
                     showTimestamp={showTimestamp}
                     timestampPosition={timestampPosition}
                     timestampStyle={timestampStyle}
-                    onRedact={setRedactingStep}
+                    onAnnotate={setEditingStep}
                     duplicateStep={duplicateStep}
                     draggingIndex={draggingIndex}
                     setDraggingIndex={setDraggingIndex}
@@ -2627,12 +3051,16 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ─── REDACTION OVERLAY (Root Level) ─────────────────────────────────── */}
-      {redactingStep && (
-        <RedactionWorkspace 
-          step={redactingStep} 
-          onCancel={() => setRedactingStep(null)}
-          onSave={handleSaveRedaction}
+      {/* ─── STEP EDITOR OVERLAY — annotations + redaction (Root Level) ─────── */}
+      {editingStep && (
+        <StepEditorWorkspace
+          step={editingStep}
+          highlightColor={editingStep.color || guideColor}
+          showTimestamp={showTimestamp}
+          timestampPosition={timestampPosition}
+          timestampStyle={timestampStyle}
+          onCancel={() => setEditingStep(null)}
+          onSave={handleSaveStepEdits}
         />
       )}
 
