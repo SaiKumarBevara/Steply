@@ -108,9 +108,12 @@
   <div style="padding: 0 18px 12px; display: flex; align-items: center; justify-content: space-between;">
     <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary);">Default Highlight</span>
     <div style="display: flex; background: var(--color-background-secondary); border-radius: 6px; padding: 2px;">
-      <button id="color-red" class="filter-btn" style="border: none; background: #FEF2F2; color: #B91C1C; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s;">Flare</button>
-      <button id="color-green" class="filter-btn" style="border: none; background: transparent; color: var(--color-text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s;">Orbit</button>
-      <button id="color-none" class="filter-btn" style="border: none; background: transparent; color: var(--color-text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s;">None</button>
+      <!-- The dots carry a fixed colour so you can see what "Flare" and "Orbit" mean
+           without having to select one first; only the chip's own background changes
+           with the active state. Tooltips match the dashboard's wording. -->
+      <button id="color-red" class="filter-btn" title="Standard Flare (Red) — red box around the clicked element" style="border: none; background: #FEF2F2; color: #B91C1C; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 5px;"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: #DC2626; flex-shrink: 0;"></span>Flare</button>
+      <button id="color-green" class="filter-btn" title="Steady Orbit (Green) — green box around the clicked element" style="border: none; background: transparent; color: var(--color-text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 5px;"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: #16A34A; flex-shrink: 0;"></span>Orbit</button>
+      <button id="color-none" class="filter-btn" title="No highlight box on screenshots" style="border: none; background: transparent; color: var(--color-text-secondary); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 5px;"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; border: 1px solid #9CA3AF; background: transparent; box-sizing: border-box; flex-shrink: 0;"></span>None</button>
     </div>
   </div>
 
@@ -127,7 +130,9 @@
   </div>
 
   <!-- Footer Tab Bar -->
-  <div style="border-top: 0.5px solid var(--color-border-tertiary); display: flex;">
+  <!-- 2px of bottom padding keeps the active tab's underline off the window frame,
+       where it read as clipped. -->
+  <div style="border-top: 0.5px solid var(--color-border-tertiary); display: flex; padding-bottom: 2px;">
     <button id="tabCapture" style="flex: 1; padding: 12px 0; background: transparent; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; color: #185FA5; border-bottom: 2px solid #185FA5;">
       <i class="ti ti-aperture" style="font-size: 18px;" aria-hidden="true"></i>
       <span style="font-size: 11px; font-weight: 500;">Capture</span>

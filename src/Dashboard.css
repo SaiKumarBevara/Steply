@@ -390,6 +390,25 @@ body {
   border-top: 1px solid var(--color-border-tertiary);
 }
 
+/* Groups the guide header into "screenshot appearance" / "guide actions" instead of
+   one undifferentiated run of eight controls. */
+.header-divider {
+  width: 1px;
+  height: 22px;
+  flex: 0 0 auto;
+  margin: 0 2px;
+  background: var(--color-border-secondary);
+}
+
+/* Delete inside the header overflow menu — red, but only once the menu is open. */
+.header-menu-danger {
+  color: #B42318;
+}
+
+.header-menu-danger:hover {
+  background: rgba(180, 35, 24, 0.08);
+}
+
 /* ── Trinity Toggle ───────────────────────────────────────────────────────── */
 .trinity-toggle {
   display: flex;

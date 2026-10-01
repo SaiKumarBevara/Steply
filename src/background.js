@@ -147,6 +147,29 @@ const saveGuide      = (g)  => txPut('guides',      g);
 const saveStep       = (s)  => txPut('steps',        s);
 const saveScreenshot = (ss) => txPut('screenshots',  ss);
 
+// Titles used to be just 'Guide created <timestamp>', which made every row in the
+// popup and the sidebar look identical and pushed the only distinguishing part —
+// the time — out of the truncated width. Leading with the host makes the list
+// scannable; the timestamp stays on the end so two recordings of the same site are
+// still tellable apart, and sorting by name still groups by site. Falls back to the
+// old format when there's no usable URL (chrome:// pages, unknown sender), so the
+// title is never empty. Existing guides keep whatever title they were saved with —
+// nothing is renamed or migrated.
+function guideTitleFor(url) {
+  const stamp = new Date().toLocaleString();
+  try {
+    const u = new URL(url);
+    // Only real web pages give a meaningful host. chrome:// would title a guide
+    // "extensions", and recording can be started on such a tab even though Chrome
+    // blocks capture there, so those fall back to the old format.
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      const host = u.hostname.replace(/^www\./, '');
+      if (host) return `${host} · ${stamp}`;
+    }
+  } catch (e) { /* not a parseable URL — fall through */ }
+  return 'Guide created ' + stamp;
+}
+
 function getScreenshot(id) {
   return new Promise((resolve) => {
     const tx  = db.transaction(['screenshots'], 'readonly');
@@ -316,7 +339,7 @@ async function handleMessage(message, sender, sendResponse) {
       chrome.storage.local.set({ isPaused: false });
       currentGuide = {
         id:        'guide_' + Date.now(),
-        title:     'Guide created ' + new Date().toLocaleString(),
+        title:     guideTitleFor(message.url),
         url:       message.url || 'Multiple URLs',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -773,7 +796,7 @@ async function processNextStep() {
       const res = await new Promise(r => chrome.storage.local.get(['highlightColor'], r));
       currentGuide = {
         id:        'guide_' + Date.now(),
-        title:     'Guide created ' + new Date().toLocaleString(),
+        title:     guideTitleFor(sender.tab?.url),
         url:       sender.tab?.url || 'Unknown URL',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),

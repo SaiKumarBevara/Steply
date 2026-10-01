@@ -74,6 +74,12 @@ document.addEventListener('DOMContentLoaded', () => {
     return `${days} days ago`;
   }
 
+  // A one-step guide was reading as "1 steps".
+  function stepLabel(count) {
+    const n = Number(count) || 0;
+    return `${n} ${n === 1 ? 'step' : 'steps'}`;
+  }
+
   // ── UI state ───────────────────────────────────────────────────────────────
   function updateUI() {
     if (isRecording) {
@@ -216,7 +222,9 @@ document.addEventListener('DOMContentLoaded', () => {
           left.appendChild(textWrap);
 
           const badge = document.createElement('span');
-          badge.style.cssText = 'font-size: 11px; font-weight: 500; color: #185FA5; background: #E6F1FB; padding: 3px 8px; border-radius: 20px; flex-shrink: 0;';
+          // min-width keeps the pills a consistent size, so "1 step" and "45 steps"
+          // don't leave the right edge of the list ragged.
+          badge.style.cssText = 'font-size: 11px; font-weight: 500; color: #185FA5; background: #E6F1FB; padding: 3px 8px; border-radius: 20px; flex-shrink: 0; min-width: 54px; text-align: center;';
 
           if (isActiveRecording) {
             // BUG P: fetch live stepCount from background for the recording guide
@@ -225,12 +233,12 @@ document.addEventListener('DOMContentLoaded', () => {
               // getRecordingStatus doesn't return stepCount directly — fetch the guide
               chrome.runtime.sendMessage({ action: 'getGuide', guideId: guide.id }, (guideRes) => {
                 if (guideRes?.guide) {
-                  badge.textContent = `${guideRes.guide.steps?.length ?? guide.stepCount} steps`;
+                  badge.textContent = stepLabel(guideRes.guide.steps?.length ?? guide.stepCount);
                 }
               });
             });
           } else {
-            badge.textContent = `${guide.stepCount} steps`;
+            badge.textContent = stepLabel(guide.stepCount);
           }
 
           div.appendChild(left);

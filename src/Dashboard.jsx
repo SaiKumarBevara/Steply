@@ -75,6 +75,13 @@ function timeAgo(dateStr) {
   return `${days} days ago`;
 }
 
+// A one-step guide was reading as "1 steps" in the sidebar, the header and the
+// bulk-export list.
+function stepLabel(count) {
+  const n = Number(count) || 0;
+  return `${n} ${n === 1 ? 'step' : 'steps'}`;
+}
+
 // Renders a screenshot onto canvas with optional red-box annotation.
 // Accepts the full step object to handle both old and new storage formats.
 // Color config for each frequency mode
@@ -1074,7 +1081,27 @@ export default function Dashboard() {
   const [coverOrg, setCoverOrg] = useState('');
   const [coverLogo, setCoverLogo] = useState(null);
   const [showTimestampPopover, setShowTimestampPopover] = useState(false);
-  
+  // Overflow menu in the guide header. Delete lives in here rather than as a bare
+  // button next to Resume, so an irreversible action takes two deliberate clicks.
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+  const headerMenuRef = useRef(null);
+
+  useEffect(() => {
+    if (!showHeaderMenu) return;
+    const onDocMouseDown = (e) => {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(e.target)) {
+        setShowHeaderMenu(false);
+      }
+    };
+    const onKeyDown = (e) => { if (e.key === 'Escape') setShowHeaderMenu(false); };
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showHeaderMenu]);
+
   // ── Bulk Export State ──────────────────────────────────────────────────
   const [bulkMode, setBulkMode]             = useState(false);
   const [selectedIds, setSelectedIds]       = useState([]); // order is preserved here
@@ -1194,7 +1221,16 @@ export default function Dashboard() {
   };
 
   const handleDeleteGuide = () => {
-    if (window.confirm('Are you sure you want to delete this guide?')) {
+    // The old prompt was a bare "Are you sure?", which didn't say which guide was
+    // about to go, that the screenshots go with it, or that there's no undo — and
+    // Enter accepts a native confirm. Naming the guide and the count makes a
+    // reflexive confirmation much less likely to destroy the wrong thing.
+    const n = selectedGuide.steps?.length ?? selectedGuide.stepCount ?? 0;
+    const message =
+      `Delete "${selectedGuide.title || 'Untitled'}"?\n\n` +
+      `This permanently removes the guide and all ${stepLabel(n)}, including their screenshots.\n` +
+      `This cannot be undone.`;
+    if (window.confirm(message)) {
       chrome.runtime.sendMessage({ action: 'deleteGuide', guideId: selectedGuide.id }, (res) => {
         // BUG M: check for error before treating operation as successful
         if (res?.error) {
@@ -2635,7 +2671,7 @@ export default function Dashboard() {
                 </div>
                 <div className="bulk-item-content">
                   <div className="bulk-item-title">{g.title || 'Untitled'}</div>
-                  <div className="bulk-item-meta">{g.stepCount} steps · {timeAgo(g.updatedAt)}</div>
+                  <div className="bulk-item-meta">{stepLabel(g.stepCount)} · {timeAgo(g.updatedAt)}</div>
                 </div>
                 <div style={{ display: 'flex', gap: '4px' }}>
                    <button className="bulk-item-remove" onClick={() => moveBulkItem(idx, -1)} disabled={idx === 0}>
@@ -2762,7 +2798,7 @@ export default function Dashboard() {
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <p className="gi-title" title={g.title}>{g.title || 'Untitled'}</p>
-                    <p className="gi-meta">{g.stepCount} steps · {timeAgo(g.updatedAt)}</p>
+                    <p className="gi-meta">{stepLabel(g.stepCount)} · {timeAgo(g.updatedAt)}</p>
                   </div>
                 </div>
               );
@@ -2791,8 +2827,12 @@ export default function Dashboard() {
         ) : selectedGuide ? (
           <>
             {/* Main Header */}
-            <div style={{ padding: '14px 20px 13px', background: 'var(--color-background-primary)', borderBottom: '1px solid var(--color-border-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 10 }}>
-              <div>
+            {/* gap + the shrink rules below matter: eight control groups sit in this
+                one row, and without them a long guide title pushes the buttons off
+                the right edge instead of ellipsising. The title block is the only
+                part allowed to give up space. */}
+            <div style={{ padding: '14px 20px 13px', background: 'var(--color-background-primary)', borderBottom: '1px solid var(--color-border-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', zIndex: 10 }}>
+              <div style={{ flex: '1 1 auto', minWidth: 0 }}>
                 {editingTitle ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <input 
@@ -2807,32 +2847,39 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <p style={{ margin: 0, fontSize: '14px', fontWeight: 500, color: 'var(--color-text-primary)' }}>{selectedGuide.title || 'Untitled'}</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                      <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--color-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={selectedGuide.title || 'Untitled'}>{selectedGuide.title || 'Untitled'}</h2>
                       {isRecording && activeGuideId === selectedGuide.id && (
-                        <span className="recording-badge-header">
+                        <span className="recording-badge-header" style={{ flexShrink: 0 }}>
                           <span className="recording-pulse"></span>
                           Recording
                         </span>
                       )}
                     </div>
-                    <p style={{ margin: 0, fontSize: '11px', color: 'var(--color-text-tertiary)' }}>{selectedGuide.steps?.length || 0} steps · created {new Date(selectedGuide.createdAt).toLocaleDateString()}</p>
+                    {/* The title already carries the creation date, so repeating it here
+                        was redundant. Relative time matches how the sidebar shows the
+                        same guide. */}
+                    <p style={{ margin: 0, fontSize: '11px', color: 'var(--color-text-tertiary)' }}>{stepLabel(selectedGuide.steps?.length || 0)} · {timeAgo(selectedGuide.updatedAt || selectedGuide.createdAt)}</p>
                   </>
                 )}
               </div>
               
               {!editingTitle && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: '0 0 auto' }}>
                   <button className="btn-secondary" onClick={() => setEditingTitle(true)}>
                     <i className="ti ti-edit" style={{ fontSize: '13px' }}></i>
                     Rename
                   </button>
-                  
+
                   {/* Export Trigger */}
                   <button className="btn-secondary" onClick={() => setExportModalOpen(true)}>
                     <i className="ti ti-download" style={{ fontSize: '13px' }}></i>
                     Export
                   </button>
+
+                  {/* Keeps "what the screenshots look like" visually separate from
+                      "things you do to this guide". */}
+                  <span className="header-divider" />
 
                   {/* ── Trinity Toggle (Guide Level) ── */}
                   <div className="trinity-toggle" title="Guide default highlight">
@@ -2862,42 +2909,56 @@ export default function Dashboard() {
                     </button>
                   </div>
 
-                  {/* ── Timestamp Toggle (Guide Level) ── */}
-                  <div className="trinity-toggle" title="Show timestamps on screenshots">
-                    <button
-                      className={`trinity-btn ${showTimestamp ? 'active-none' : ''}`}
-                      onClick={() => updateTimestampOptions({ showTimestamp: true })}
-                      title="Show timestamps"
-                    >
-                      <i className="ti ti-clock" style={{ fontSize: '12px', color: showTimestamp ? '#185FA5' : 'inherit' }} />
-                      Time: Yes
-                    </button>
-                    <button
-                      className={`trinity-btn ${!showTimestamp ? 'active-none' : ''}`}
-                      onClick={() => updateTimestampOptions({ showTimestamp: false })}
-                      title="Hide timestamps"
-                    >
-                      <i className="ti ti-clock-off" style={{ fontSize: '12px' }} />
-                      Time: No
-                    </button>
-                  </div>
-
-                  {showTimestamp && (
-                    <div style={{ position: 'relative', display: 'inline-block' }}>
+                  {/* ── Timestamp (one control) ──
+                      This used to be a "Time: Yes / Time: No" pair *plus* a separate
+                      gear that only rendered when timestamps were on. Two controls for
+                      one feature, and because the gear appeared and disappeared, every
+                      button to its right — including Delete — shifted sideways as you
+                      toggled. One always-present chip keeps the row's width stable and
+                      puts on/off next to the settings it governs. */}
+                  <div style={{ position: 'relative', display: 'inline-block' }}>
+                    <div className="trinity-toggle">
                       <button
-                        className={`timestamp-settings-trigger ${showTimestampPopover ? 'active' : ''}`}
+                        className={`trinity-btn ${showTimestampPopover ? 'active-none' : ''}`}
                         onClick={() => setShowTimestampPopover(!showTimestampPopover)}
-                        title="Customize timestamp font, style, and position"
+                        title="Show and customise the timestamp drawn on screenshots"
+                        aria-haspopup="true"
+                        aria-expanded={showTimestampPopover}
                       >
-                        <i className="ti ti-settings" style={{ fontSize: '13px' }} />
+                        <i className={`ti ${showTimestamp ? 'ti-clock' : 'ti-clock-off'}`} style={{ fontSize: '12px', color: showTimestamp ? '#185FA5' : 'inherit' }} />
+                        Timestamp: {showTimestamp ? 'On' : 'Off'}
+                        <i className="ti ti-chevron-down" style={{ fontSize: '11px', opacity: 0.55 }} />
                       </button>
-                      {showTimestampPopover && (
-                        <div className="timestamp-popover">
-                          <div className="timestamp-popover-header">
-                            <span>Customize Timestamp</span>
-                            <button className="timestamp-popover-close" onClick={() => setShowTimestampPopover(false)}>&times;</button>
+                    </div>
+                    {showTimestampPopover && (
+                      <div className="timestamp-popover">
+                        <div className="timestamp-popover-header">
+                          <span>Customize Timestamp</span>
+                          <button className="timestamp-popover-close" onClick={() => setShowTimestampPopover(false)}>&times;</button>
+                        </div>
+
+                        <div className="timestamp-popover-section">
+                          <label>Show on screenshots</label>
+                          <div className="trinity-toggle" style={{ width: 'fit-content' }}>
+                            <button
+                              className={`trinity-btn ${showTimestamp ? 'active-none' : ''}`}
+                              onClick={() => updateTimestampOptions({ showTimestamp: true })}
+                            >
+                              <i className="ti ti-clock" style={{ fontSize: '12px', color: showTimestamp ? '#185FA5' : 'inherit' }} />
+                              On
+                            </button>
+                            <button
+                              className={`trinity-btn ${!showTimestamp ? 'active-none' : ''}`}
+                              onClick={() => updateTimestampOptions({ showTimestamp: false })}
+                            >
+                              <i className="ti ti-clock-off" style={{ fontSize: '12px' }} />
+                              Off
+                            </button>
                           </div>
-                          
+                        </div>
+
+                        {showTimestamp && (
+                          <>
                           <div className="timestamp-popover-section">
                             <label>Placement Position</label>
                             <div className="timestamp-position-grid">
@@ -2957,22 +3018,49 @@ export default function Dashboard() {
                               </button>
                             </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
-                  <button 
-                    className={isRecording && activeGuideId === selectedGuide.id ? "btn-recording-active" : "btn-primary"} 
+                  <span className="header-divider" />
+
+                  <button
+                    className={isRecording && activeGuideId === selectedGuide.id ? "btn-recording-active" : "btn-primary"}
                     onClick={handleResumeRecording}
                     disabled={isRecording && activeGuideId === selectedGuide.id}
                   >
                     <i className={isRecording && activeGuideId === selectedGuide.id ? "ti ti-circle-filled" : "ti ti-player-play"} style={{ fontSize: '13px' }}></i>
                     {isRecording && activeGuideId === selectedGuide.id ? "Recording..." : "Resume"}
                   </button>
-                  <button className="btn-danger" onClick={handleDeleteGuide}>
-                    <i className="ti ti-trash" style={{ fontSize: '13px' }}></i>
-                  </button>
+
+                  {/* Delete used to be a bare red button 8px from Resume, at the far
+                      right where the cursor lands. Behind the menu it needs two
+                      deliberate clicks, and it can't be hit by a slip. */}
+                  <div className="export-dropdown-wrap" ref={headerMenuRef}>
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '6px 9px' }}
+                      onClick={() => setShowHeaderMenu(v => !v)}
+                      title="More actions"
+                      aria-haspopup="true"
+                      aria-expanded={showHeaderMenu}
+                    >
+                      <i className="ti ti-dots" style={{ fontSize: '14px' }}></i>
+                    </button>
+                    {showHeaderMenu && (
+                      <div className="export-dropdown-menu">
+                        <button
+                          className="export-dropdown-item header-menu-danger"
+                          onClick={() => { setShowHeaderMenu(false); handleDeleteGuide(); }}
+                        >
+                          <i className="ti ti-trash" style={{ fontSize: '13px' }}></i>
+                          Delete guide
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
