@@ -733,42 +733,67 @@ body {
 }
 
 .redact-header {
-  padding: 16px 40px;
+  padding: 12px 24px;
   background: var(--color-background-primary); /* Match dashboard header/card color */
   border-bottom: 1px solid var(--color-border-secondary);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 20px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.02);
 }
 
+/* The title block is the only part allowed to give up space, so the toolbar and
+   the action buttons never get squeezed into wrapping. */
 .redact-info {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-text-primary);
 }
 
 .redact-info i {
-  font-size: 28px;
+  font-size: 24px;
   color: #185FA5;
+  flex-shrink: 0;
+}
+
+.redact-info-text {
+  min-width: 0; /* required for the ellipsis on the hint below */
 }
 
 .redact-info h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .redact-info p {
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--color-text-secondary); /* Better contrast in light mode */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .redact-actions {
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.redact-actions button {
+  white-space: nowrap; /* "Apply & Save" was breaking across three lines */
+}
+
+/* Below this the hint line has no room; the tooltips still explain each tool. */
+@media (max-width: 1150px) {
+  .redact-info p { display: none; }
 }
 
 .redact-canvas-container {
@@ -817,6 +842,148 @@ body {
 
 .redact-status i {
   font-size: 40px;
+}
+
+/* ── Annotation Toolbar ──
+   StepEditorWorkspace reuses the .redact-* overlay/header/canvas shell above, so
+   only the toolbar bits below are new. The toolbar must never wrap — a second row
+   pushed the undo/clear buttons underneath the tools. */
+.annot-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+
+.annot-tool {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 6px;
+  background: var(--color-background-primary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.annot-tool i {
+  font-size: 15px;
+}
+
+.annot-tool:hover:not(:disabled) {
+  background: var(--color-background-tertiary);
+  color: var(--color-text-primary);
+}
+
+.annot-tool.active {
+  background: #185FA5;
+  border-color: #185FA5;
+  color: #fff;
+}
+
+.annot-tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Blur is the one destructive tool in the editor, so it reads differently. */
+.annot-tool-blur.active {
+  background: #B42318;
+  border-color: #B42318;
+}
+
+.annot-blur-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 2px;
+  padding: 3px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #B42318;
+  background: rgba(180, 35, 24, 0.08);
+  border: 1px solid rgba(180, 35, 24, 0.25);
+  border-radius: 5px;
+}
+
+.annot-blur-warning i {
+  font-size: 12px;
+}
+
+.annot-divider {
+  width: 1px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin: 0 2px;
+  background: var(--color-border-secondary);
+}
+
+.annot-swatch {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 2px solid var(--color-border-secondary);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s;
+}
+
+.annot-swatch:hover {
+  transform: scale(1.12);
+}
+
+.annot-swatch.active {
+  border-color: #185FA5;
+  box-shadow: 0 0 0 2px rgba(24, 95, 165, 0.25);
+}
+
+/* Inline input for a text annotation, positioned over the canvas at the click
+   point using the same % technique as .redact-guide-rect. */
+.annot-text-input {
+  position: absolute;
+  z-index: 20;
+  min-width: 160px;
+  padding: 4px 8px;
+  font-family: "DM Sans", sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1.5px solid #185FA5;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  outline: none;
+}
+
+/* Keeps the select tool from showing a crosshair it can't act on. */
+.redact-canvas.annot-select {
+  cursor: default;
+}
+
+/* Badge on the step card's annotate button showing how many shapes are saved. */
+.annot-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  color: #fff;
+  background: #D9480F;
+  border-radius: 7px;
 }
 
 /* ── Timestamp Settings Popover ── */

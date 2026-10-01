@@ -141,16 +141,34 @@ Open a guide in the Dashboard, then use the export buttons in the top-right:
 
 ---
 
-## Redaction Workspace (Privacy & Compliance)
+## Screenshot Editor (Annotations & Redaction)
 
-Steply includes a production-grade Redaction tool to help you obscure sensitive data (PII, passwords, internal keys) before sharing your guides.
+One editor covers both marking up a screenshot and obscuring sensitive data in it (PII, passwords, internal keys).
 
-### How to Redact:
+### How to edit a screenshot:
 1. Open a guide in the **Dashboard**.
-2. Click the **🛡️ Shield** icon on any step card.
-3. In the Redaction Workspace, **drag to draw a box** over sensitive information.
-4. **Smart Blur:** Steply uses a density-aware blur algorithm that ensures even small text (like emails) is irreversibly obscured.
-5. Click **"Apply & Save"** to update the step.
+2. Click the **✏️ Pencil** icon on any step card. The badge on the icon shows how many annotations that step already has.
+3. Pick a tool from the toolbar and a colour:
+
+| Tool | Gesture | What it does |
+|---|---|---|
+| **Arrow** | Drag | Points at something the recorder didn't click |
+| **Box** | Drag | Outlines a region |
+| **Text** | Click, type, press Enter | Places a label |
+| **Numbered badge** | Click | Auto-numbers 1, 2, 3… in placement order |
+| **Blur** | Drag | Obscures sensitive information |
+| **Select** | Click a shape | Then press `Delete` to remove it |
+
+4. `Ctrl + Z` undoes the last edit; the 🗑️ button clears them all. `Escape` closes the editor.
+5. Click **"Apply & Save"**.
+
+### Annotations vs. blur — an important difference
+
+- **Annotations are non-destructive.** They are stored alongside the step, not painted into the screenshot, so you can reopen the editor at any time to change or remove them. They are re-drawn into every export and into the clipboard copy.
+- **Blur is permanent.** It is flattened into the stored screenshot on save, because leaving the original pixels in the database would make the redaction cosmetic rather than real. A warning appears next to **Apply & Save** whenever a blur is pending. Before saving, blur can still be undone like any other edit.
+- **Smart Blur:** a density-aware algorithm — small regions get more blur passes — so even small text like email addresses is irreversibly obscured.
+
+> Blur is unavailable on guides recorded by very old versions of Steply, whose screenshots are stored in an earlier format. Annotations work on those steps as normal.
 
 ---
 

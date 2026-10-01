@@ -725,6 +725,29 @@ async function handleMessage(message, sender, sendResponse) {
     tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
     return;
   }
+
+  // ── updateStepAnnotations ──────────────────────────────────────────────────
+  // Manual markup (arrows/boxes/text/badges) stored as a plain array on the step.
+  // Optional field: steps saved before this existed simply have none, so no
+  // schema change or migration is involved.
+  if (message.action === 'updateStepAnnotations') {
+    let hasResponded = false;
+    const tx  = db.transaction(['steps'], 'readwrite');
+    const req = tx.objectStore('steps').get(message.stepId);
+    req.onsuccess = (e) => {
+      const step = e.target.result;
+      if (step) {
+        step.annotations = Array.isArray(message.annotations) ? message.annotations : [];
+        tx.objectStore('steps').put(step);
+      } else {
+        hasResponded = true;
+        sendResponse({ error: 'Step not found' });
+      }
+    };
+    tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
+    tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
+    return;
+  }
 }
 
 
