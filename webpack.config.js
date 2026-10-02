@@ -1,7 +1,7 @@
 const path = require('path');
 const CopyPlugin = require('copy-webpack-plugin');
 
-module.exports = {
+const baseConfig = {
   entry: {
     popup: './src/popup.js',
     dashboard: './src/Dashboard.jsx',
@@ -38,7 +38,19 @@ module.exports = {
     ]
   },
   resolve: {
-    extensions: ['.js', '.jsx']
+    extensions: ['.js', '.jsx'],
+    // jsPDF lazily imports these three for doc.html() and SVG support. Steply uses
+    // neither — every export goes through addImage/text/addPage — so webpack was
+    // emitting ~372 KB of chunks (html2canvas, canvg, dompurify) that no code path
+    // ever loads, and shipping them in the published package.
+    //
+    // If a future feature calls doc.html() or addSvgAsImage(), delete these three
+    // lines; leaving them in place would make that call fail at runtime.
+    alias: {
+      html2canvas: false,
+      canvg: false,
+      dompurify: false
+    }
   },
   plugins: [
     new CopyPlugin({
@@ -106,6 +118,20 @@ module.exports = {
       }
     }
   },
-  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
-  devtool: 'cheap-module-source-map'
+};
+
+// Exported as a function so the build can tell which mode it is actually in. `npm run
+// build` passes --mode production on the command line, which overrides any `mode` set in
+// this file and does not set process.env.NODE_ENV — so neither of those could be trusted
+// on its own, and the previous `process.env.NODE_ENV` check was silently always false.
+module.exports = (env, argv) => {
+  const isProd = (argv && argv.mode) === 'production';
+  return {
+    ...baseConfig,
+    mode: isProd ? 'production' : 'development',
+    // Source maps are a development aid. Emitting them in a production build puts
+    // readable source into the published package, and was leaving an orphan
+    // popup.js.map in dist/.
+    devtool: isProd ? false : 'cheap-module-source-map'
+  };
 };

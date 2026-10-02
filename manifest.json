@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Steply",
-  "version": "3.3.3",
-  "description": "Auto-generate step-by-step guides by recording user interactions",
+  "version": "3.4.0",
+  "description": "Record clicks into step-by-step guides with screenshots, or save any full page as a PDF. Export to PDF, Word, Markdown & HTML.",
   "permissions": [
     "activeTab",
     "storage",
