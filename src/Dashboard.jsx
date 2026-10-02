@@ -82,6 +82,184 @@ function stepLabel(count) {
   return `${n} ${n === 1 ? 'step' : 'steps'}`;
 }
 
+// ─── PDF layout ───────────────────────────────────────────────────────────────
+// Shared by the single-guide and bulk exporters so both documents look the same and
+// the page furniture isn't written out twice. Millimetres, A4.
+const PDF = {
+  pageW: 210,
+  pageH: 297,
+  margin: 18,
+  get contentW() { return this.pageW - this.margin * 2; },
+  blue:  [24, 95, 165],   // Steply primary
+  ink:   [17, 24, 39],
+  body:  [107, 114, 128],
+  faint: [156, 163, 175],
+  rule:  [229, 231, 235],
+};
+
+// Scales an image to fit a box without distorting it. Both exporters previously drew
+// every screenshot at a fixed 180x100mm, which stretched any capture that wasn't
+// exactly 1.8:1 — portrait windows and tall mobile captures came out visibly squashed.
+function fitPdfImage(doc, dataUrl, maxW, maxH) {
+  let ratio = 16 / 9; // only used if the properties can't be read
+  try {
+    const p = doc.getImageProperties(dataUrl);
+    if (p?.width > 0 && p?.height > 0) ratio = p.width / p.height;
+  } catch (e) { /* keep the fallback */ }
+  let w = maxW, h = w / ratio;
+  if (h > maxH) { h = maxH; w = h * ratio; }
+  return { w, h };
+}
+
+// Word's ImageRun needs explicit pixel dimensions, and both Word exporters hardcoded
+// 500x300 — the same squashing the PDF had. Reads the natural size off the data URL and
+// fits it into the box. Never rejects, so a bad image can't fail the whole export.
+function imageDisplaySize(dataUrl, maxW, maxH) {
+  return new Promise((resolve) => {
+    const fallback = { width: maxW, height: Math.round(maxW * 9 / 16) };
+    const img = new Image();
+    img.onload = () => {
+      if (!img.naturalWidth || !img.naturalHeight) return resolve(fallback);
+      const ratio = img.naturalWidth / img.naturalHeight;
+      let w = maxW, h = w / ratio;
+      if (h > maxH) { h = maxH; w = h * ratio; }
+      resolve({ width: Math.round(w), height: Math.round(h) });
+    };
+    img.onerror = () => resolve(fallback);
+    img.src = dataUrl;
+  });
+}
+
+// Numbered blue disc, echoing the step badges in the dashboard timeline. Carrying the
+// number here means the heading no longer has to repeat "Step N:".
+function drawPdfStepBadge(doc, n, cx, cy, r = 4.6) {
+  const label = String(n);
+  const wide  = label.length > 2;
+  doc.setFillColor(...PDF.blue);
+  doc.circle(cx, cy, r, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(wide ? 8 : 10);
+  doc.text(label, cx, cy + (wide ? 1.1 : 1.4), { align: 'center' });
+}
+
+// Two steps per page. One step per page turned a 12-step guide into a 12-page
+// document with half of every page empty. Splitting the column into two fixed slots
+// keeps the rhythm predictable — step 1 always starts at the same height as step 3 —
+// which a flow layout can't promise. `contentTop` varies because the bulk export
+// prints a guide title above the first slot on a guide's opening page.
+const PDF_SLOT_GAP = 10;
+function pdfSlots(contentTop) {
+  const h = (PDF.pageH - 24 - contentTop - PDF_SLOT_GAP) / 2;
+  return [0, 1].map(i => {
+    const top = contentTop + i * (h + PDF_SLOT_GAP);
+    return { top, bottom: top + h };
+  });
+}
+
+// Two steps to a page is right for ordinary viewport screenshots, but a full-page
+// capture is many times taller than it is wide, and squeezed into a half-page slot it
+// renders as an unreadable ~31mm strip (vs ~75mm with the whole page). So a figure that
+// tall takes the page to itself. Returns false when the dimensions can't be read, which
+// keeps the common two-per-page case as the default.
+function pdfStepWantsFullPage(doc, image, slotH) {
+  if (!image) return false;
+  try {
+    const p = doc.getImageProperties(image);
+    if (!(p?.width > 0 && p?.height > 0)) return false;
+    // Width the figure would get in a half slot, allowing ~16mm for the heading.
+    const halfW = Math.min(PDF.contentW, Math.max(0, slotH - 16) * (p.width / p.height));
+    return halfW < PDF.contentW * 0.62;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Draws one step into a slot: badge, heading, description, then the screenshot fitted
+// to whatever height is left. Both PDF exporters go through here, so they can't drift
+// apart the way they had (both carried the same hardcoded image-size bug).
+function drawPdfStep(doc, { number, step, image, top, bottom }) {
+  const textX = PDF.margin + 13;
+  const textW = PDF.contentW - 13;
+  const hasImage = step.stepType !== 'note' && !!image;
+  let y = top + 4.6;
+
+  drawPdfStepBadge(doc, number, PDF.margin + 4.6, y - 1.3);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(...PDF.ink);
+  const titleLines = doc.splitTextToSize(step.action || 'Step', textW);
+  doc.text(titleLines, textX, y);
+  y += titleLines.length * 5.9;
+
+  if (step.description) {
+    y += 2;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(...PDF.body);
+    // A slot is a fixed box, so an unusually long description has to be clipped or it
+    // would print over the next step. Reserve room for the figure when there is one.
+    const room = bottom - y - (hasImage ? 32 : 0);
+    const maxLines = Math.max(1, Math.floor(room / 5));
+    let lines = doc.splitTextToSize(step.description, textW);
+    if (lines.length > maxLines) {
+      lines = lines.slice(0, maxLines);
+      lines[maxLines - 1] = lines[maxLines - 1].replace(/\s*\S*$/, '') + '…';
+    }
+    doc.text(lines, textX, y);
+    y += lines.length * 5;
+  }
+
+  if (hasImage) {
+    y += 5;
+    const avail = bottom - y;
+    if (avail > 8) {
+      const { w, h } = fitPdfImage(doc, image, PDF.contentW, avail);
+      const x = PDF.margin + (PDF.contentW - w) / 2;
+      doc.addImage(image, 'JPEG', x, y, w, h);
+      // Thin frame so the screenshot reads as a figure rather than floating.
+      doc.setDrawColor(...PDF.rule);
+      doc.setLineWidth(0.3);
+      doc.rect(x, y, w, h);
+    }
+  } else if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
+    y += 5;
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(9);
+    doc.setTextColor(...PDF.faint);
+    doc.text('[Screenshot not available]', textX, y);
+  }
+}
+
+// Hairline between the two slots, so a page of two steps doesn't read as one long one.
+function drawPdfSlotDivider(doc, slot) {
+  doc.setDrawColor(...PDF.rule);
+  doc.setLineWidth(0.2);
+  doc.line(PDF.margin, slot.bottom + PDF_SLOT_GAP / 2, PDF.pageW - PDF.margin, slot.bottom + PDF_SLOT_GAP / 2);
+}
+
+// Running header and footer. Stamped in a second pass, after the content is laid out,
+// because "Page 3 of 12" needs the final page count.
+function stampPdfFurniture(doc, { title, skipFirst }) {
+  const total = doc.getNumberOfPages();
+  for (let p = 1; p <= total; p++) {
+    if (skipFirst && p === 1) continue; // the cover carries its own styling
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...PDF.faint);
+    const head = doc.splitTextToSize(title || 'Untitled guide', PDF.contentW - 34)[0];
+    doc.text(head, PDF.margin, 13);
+    doc.setDrawColor(...PDF.rule);
+    doc.setLineWidth(0.2);
+    doc.line(PDF.margin, 16, PDF.pageW - PDF.margin, 16);
+    doc.line(PDF.margin, PDF.pageH - 16, PDF.pageW - PDF.margin, PDF.pageH - 16);
+    doc.text('Generated with Steply', PDF.margin, PDF.pageH - 11);
+    doc.text(`Page ${p} of ${total}`, PDF.pageW - PDF.margin, PDF.pageH - 11, { align: 'right' });
+  }
+}
+
 // Renders a screenshot onto canvas with optional red-box annotation.
 // Accepts the full step object to handle both old and new storage formats.
 // Color config for each frequency mode
@@ -1149,8 +1327,12 @@ export default function Dashboard() {
             steps: [...(prev.steps || []), msg.step],
             stepCount: (prev.stepCount || 0) + 1
           }));
-          loadGuides(); // refresh sidebar count/order
         }
+        // Outside the guard: the sidebar should track steps landing in *any* guide, not
+        // only the open one. Previously an already-open dashboard went stale whenever a
+        // step was recorded into a different guide, and "Capture this page" creates a
+        // brand-new guide that would otherwise not appear until a reload.
+        loadGuides();
       }
     };
     chrome.runtime.onMessage.addListener(messageListener);
@@ -1642,90 +1824,106 @@ export default function Dashboard() {
         // Top right Logo
         if (coverLogo) {
           try {
-            doc.addImage(coverLogo, 'PNG', 140, 20, 50, 25);
+            doc.addImage(coverLogo, 'PNG', 142, 20, 50, 25);
           } catch (e) {
             console.error("PDF logo error:", e);
           }
         }
-        
-        // Large Title
+
+        // The cover now shares the step pages' left margin so the title, the rule and
+        // every running header line up down the document.
+        doc.setFont('helvetica', 'bold');
         doc.setFontSize(28);
-        doc.setTextColor(24, 95, 165); // Steply primary blue
-        const splitTitle = doc.splitTextToSize(coverTitle || selectedGuide.title || 'Untitled Guide', 170);
-        doc.text(splitTitle, 20, 80);
-        
+        doc.setTextColor(...PDF.blue);
+        const splitTitle = doc.splitTextToSize(coverTitle || selectedGuide.title || 'Untitled Guide', PDF.contentW);
+        doc.text(splitTitle, PDF.margin, 80);
+
         // Subtitle
         if (coverSubtitle) {
+          doc.setFont('helvetica', 'normal');
           doc.setFontSize(16);
           doc.setTextColor(75, 85, 99); // gray-600
-          doc.text(coverSubtitle, 20, 80 + splitTitle.length * 10);
+          doc.text(doc.splitTextToSize(coverSubtitle, PDF.contentW), PDF.margin, 80 + splitTitle.length * 10);
         }
-        
+
         // Separator line
-        doc.setDrawColor(229, 231, 235);
+        doc.setDrawColor(...PDF.rule);
         doc.setLineWidth(1);
-        doc.line(20, 140, 190, 140);
-        
+        doc.line(PDF.margin, 140, PDF.pageW - PDF.margin, 140);
+
         // Meta info
+        doc.setFont('helvetica', 'normal');
         doc.setFontSize(12);
         doc.setTextColor(107, 114, 128); // gray-500
         let metaY = 160;
         if (coverAuthor) {
-          doc.text(`Created by: ${coverAuthor}`, 20, metaY);
+          doc.text(`Created by: ${coverAuthor}`, PDF.margin, metaY);
           metaY += 10;
         }
         if (coverOrg) {
-          doc.text(`Organization: ${coverOrg}`, 20, metaY);
+          doc.text(`Organization: ${coverOrg}`, PDF.margin, metaY);
           metaY += 10;
         }
-        doc.text(`Date: ${new Date().toLocaleDateString()}`, 20, metaY);
+        doc.text(`Date: ${new Date().toLocaleDateString()}`, PDF.margin, metaY);
+        metaY += 10;
+        doc.text(stepLabel(selectedGuide.steps.length), PDF.margin, metaY);
       }
+
+      // Two steps to a page. The blue disc carries the step number, so the heading is
+      // just the action — it used to read "Step 1: Click on ..." and spend a third of
+      // its width restating a position the reader can already see. A step whose figure
+      // is too tall for a half slot takes the page on its own; `cursor` tracks which
+      // half slots on the current page are still free.
+      const half  = pdfSlots(26);
+      const slotH = half[0].bottom - half[0].top;
+      const full  = { top: 26, bottom: PDF.pageH - 24 };
+      let cursor  = 2; // forces the first step to open a page
 
       for (let i = 0; i < selectedGuide.steps.length; i++) {
         const step = selectedGuide.steps[i];
-        
-        if (isFirstPage) {
-          isFirstPage = false;
-        } else {
-          doc.addPage();
-        }
 
-        let y = 20;
-        doc.setFontSize(16);
-        doc.setTextColor(17, 24, 39); // Gray 900
-        const stepTitleLines = doc.splitTextToSize(`Step ${i + 1}: ${step.action}`, 180);
-        doc.text(stepTitleLines, 10, y);
-        y += stepTitleLines.length * 7 + 2;
-
-        if (step.description) {
-          doc.setFontSize(11);
-          doc.setTextColor(100);
-          const lines = doc.splitTextToSize(step.description, 180);
-          doc.text(lines, 10, y);
-          y += lines.length * 6 + 4;
-        }
-        
+        let annotated = null;
         if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
           const stepColor = step.color || selectedGuide.defaultColor || 'red';
-          const annotated = await getAnnotatedDataUrl(
-            step, 
-            stepColor, 
+          annotated = await getAnnotatedDataUrl(
+            step,
+            stepColor,
             showTimestamp,
             timestampPosition,
             timestampStyle
           );
-          if (annotated) {
-            doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
-          } else {
-            doc.setFontSize(10);
-            doc.setTextColor(150);
-            doc.text("[Image not available]", 10, y + 5);
-          }
         }
-        
+
+        const wantsFull = pdfStepWantsFullPage(doc, annotated, slotH);
+        if (cursor > 1 || (wantsFull && cursor !== 0)) {
+          if (isFirstPage) isFirstPage = false; else doc.addPage();
+          cursor = 0;
+        }
+
+        let target;
+        if (wantsFull) {
+          target = full;
+          cursor = 2; // the page is spent
+        } else {
+          target = half[cursor];
+          // Drawn at the moment the second slot is actually used, rather than predicted
+          // up front — a following step might have taken a full page instead.
+          if (cursor === 1) drawPdfSlotDivider(doc, half[0]);
+          cursor += 1;
+        }
+
+        drawPdfStep(doc, {
+          number: i + 1,
+          step,
+          image: annotated,
+          top: target.top,
+          bottom: target.bottom,
+        });
+
         setExportProgress({ current: i + 1, total: selectedGuide.steps.length, format: 'PDF' });
       }
-      
+
+      stampPdfFurniture(doc, { title: selectedGuide.title, skipFirst: includeCoverPage });
       doc.save(`${sanitizeFilename(selectedGuide.title)}.pdf`);
     } catch (err) {
       alert("Failed to export PDF: " + err.message);
@@ -1835,7 +2033,7 @@ export default function Dashboard() {
               const bin  = window.atob(b64);
               const bytes = new Uint8Array(bin.length);
               for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
-              children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 500, height: 300 } })] }));
+              children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: await imageDisplaySize(annotated, 500, 460) })] }));
             }
           } catch (e) { console.error('Word image error:', e); }
         }
@@ -2129,7 +2327,7 @@ export default function Dashboard() {
     ${!includeCoverPage ? `
     <div class="guide-header">
       <h1 class="guide-title">${escapeHtml(selectedGuide.title)}</h1>
-      <p class="guide-meta">${selectedGuide.steps.length} steps · Created on ${new Date(selectedGuide.createdAt).toLocaleDateString()}</p>
+      <p class="guide-meta">${stepLabel(selectedGuide.steps.length)} · Created on ${new Date(selectedGuide.createdAt).toLocaleDateString()}</p>
     </div>
     ` : ''}
     <div class="steps-list">
@@ -2295,44 +2493,84 @@ export default function Dashboard() {
       }
       else if (format === 'pdf') {
         const doc = new jsPDF();
-        doc.setFontSize(22); doc.text(bulkTitle, 10, 20);
-        doc.setFontSize(10); doc.setTextColor(150); doc.text(`Exported on ${new Date().toLocaleDateString()}`, 10, 28);
-        
+        // Slots start below the running header rule at y=16; drawPdfStep and pdfSlots
+        // own everything below that, including clearing the footer rule.
+        const CONTENT_TOP = 26;
+
+        // Cover, laid out like the single-guide cover so the two exports match.
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(28); doc.setTextColor(...PDF.blue);
+        const bulkTitleLines = doc.splitTextToSize(bulkTitle, PDF.contentW);
+        doc.text(bulkTitleLines, PDF.margin, 80);
+        doc.setDrawColor(...PDF.rule); doc.setLineWidth(1);
+        doc.line(PDF.margin, 140, PDF.pageW - PDF.margin, 140);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(12); doc.setTextColor(...PDF.body);
+        doc.text(`Exported on ${new Date().toLocaleDateString()}`, PDF.margin, 160);
+        doc.text(`${fullGuides.length} ${fullGuides.length === 1 ? 'guide' : 'guides'} · ${stepLabel(totalSteps)}`, PDF.margin, 170);
+
         for (const g of fullGuides) {
           doc.addPage();
-          doc.setFontSize(20); doc.setTextColor(0);
-          doc.text(g.title, 10, 20);
-          let y = 40;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(19); doc.setTextColor(...PDF.blue);
+          const gTitleLines = doc.splitTextToSize(g.title || 'Untitled', PDF.contentW);
+          doc.text(gTitleLines, PDF.margin, 34);
+          // The guide title sits above the first slot, so this page's slots are shorter
+          // than those on the guide's continuation pages. Same two-per-page packing as
+          // the single-guide export, including giving a too-tall figure its own page.
+          let contentTop = 34 + gTitleLines.length * 8 + 6;
+          let half  = pdfSlots(contentTop);
+          let full  = { top: contentTop, bottom: PDF.pageH - 24 };
+          let cursor = 0;
+
           for (let i = 0; i < g.steps.length; i++) {
             const step = g.steps[i];
-            if (y > 250) { doc.addPage(); y = 20; }
-            doc.setFontSize(14); doc.text(`Step ${i + 1}: ${step.action}`, 10, y); y += 8;
-            if (step.description) {
-              doc.setFontSize(11); doc.setTextColor(100);
-              const lines = doc.splitTextToSize(step.description, 180);
-              doc.text(lines, 10, y); y += lines.length * 6 + 4;
-              doc.setTextColor(0);
-            }
-            y += 4;
+
+            let annotated = null;
             if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
               const stepColor = step.color || g.defaultColor || 'red';
-              const annotated = await getAnnotatedDataUrl(
-                step, 
-                stepColor, 
-                g.showTimestamp !== false, 
-                g.timestampPosition || 'bottom_right', 
+              annotated = await getAnnotatedDataUrl(
+                step,
+                stepColor,
+                g.showTimestamp !== false,
+                g.timestampPosition || 'bottom_right',
                 g.timestampStyle || 'minimal_black'
               );
-              if (annotated) {
-                doc.addImage(annotated, 'JPEG', 10, y, 180, 100);
-                y += 110;
-                if (y > 250) { doc.addPage(); y = 20; }
-              }
             }
+
+            const slotH = half[0].bottom - half[0].top;
+            const wantsFull = pdfStepWantsFullPage(doc, annotated, slotH);
+            if (cursor > 1 || (wantsFull && cursor !== 0)) {
+              doc.addPage();
+              contentTop = CONTENT_TOP;
+              half = pdfSlots(contentTop);
+              full = { top: contentTop, bottom: PDF.pageH - 24 };
+              cursor = 0;
+            }
+
+            let target;
+            if (wantsFull) {
+              target = full;
+              cursor = 2;
+            } else {
+              target = half[cursor];
+              if (cursor === 1) drawPdfSlotDivider(doc, half[0]);
+              cursor += 1;
+            }
+
+            drawPdfStep(doc, {
+              number: i + 1,
+              step,
+              image: annotated,
+              top: target.top,
+              bottom: target.bottom,
+            });
+
             currentStep++;
             setExportProgress({ current: currentStep, total: totalSteps, format: 'PDF' });
           }
         }
+        stampPdfFurniture(doc, { title: bulkTitle, skipFirst: true });
         doc.save(`${sanitizeFilename(bulkTitle)}.pdf`);
       }
       else if (format === 'word') {
@@ -2362,7 +2600,7 @@ export default function Dashboard() {
                 const bin = window.atob(b64);
                 const bytes = new Uint8Array(bin.length);
                 for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
-                children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: { width: 500, height: 300 } })] }));
+                children.push(new Paragraph({ children: [new ImageRun({ data: bytes, transformation: await imageDisplaySize(annotated, 500, 460) })] }));
               }
             }
             currentStep++;
@@ -2407,7 +2645,7 @@ export default function Dashboard() {
           guidesHtml += `
             <div class="guide-section">
               <h2 class="guide-title">${escapeHtml(g.title)}</h2>
-              <p class="guide-meta">${g.steps.length} steps · Created on ${new Date(g.createdAt).toLocaleDateString()}</p>
+              <p class="guide-meta">${stepLabel(g.steps.length)} · Created on ${new Date(g.createdAt).toLocaleDateString()}</p>
               <div class="steps-list">
                 ${stepsHtml}
               </div>
@@ -2554,7 +2792,7 @@ export default function Dashboard() {
     <div class="container">
       <div class="bulk-header-card">
         <h1 class="bulk-title">${escapeHtml(bulkTitle)}</h1>
-        <p class="bulk-meta">Combined export of ${fullGuides.length} guides · Exported on ${new Date().toLocaleDateString()}</p>
+        <p class="bulk-meta">Combined export of ${fullGuides.length} ${fullGuides.length === 1 ? 'guide' : 'guides'} · Exported on ${new Date().toLocaleDateString()}</p>
       </div>
       ${guidesHtml}
     </div>

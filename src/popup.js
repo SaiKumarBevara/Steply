@@ -7,9 +7,55 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusText  = document.getElementById('statusText');
   const guidesList  = document.getElementById('guidesList');
 
-  // ── Guides tab → opens dashboard (CSP-safe: no inline handlers) ────────────
-  document.getElementById('tabGuides').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+  // ── Download this page as a PDF ───────────────────────────────────────────
+  // Replaces the old Guides tab, which duplicated the "Open dashboard" button. The
+  // work happens in the service worker and the PDF is assembled in capture.html; all
+  // this does is start it and report a refusal. Nothing is saved as a guide.
+  const capturePageBtn   = document.getElementById('capturePageBtn');
+  const capturePageLabel = document.getElementById('capturePageLabel');
+  const capturePageError = document.getElementById('capturePageError');
+
+  capturePageBtn.addEventListener('click', () => {
+    if (capturePageBtn.disabled) return;
+    // Disabled for the duration so a double-click can't start two captures.
+    capturePageBtn.disabled = true;
+    capturePageBtn.style.opacity = '0.6';
+    capturePageBtn.style.cursor = 'default';
+    // A full page is captured a screen at a time and captureVisibleTab is rate-limited
+    // to about two calls a second, so a long page genuinely takes several seconds. Say
+    // so, or the button looks hung.
+    capturePageLabel.textContent = 'Capturing page…';
+    capturePageError.style.display = 'none';
+    const slowHint = setTimeout(() => {
+      capturePageError.textContent = 'Scrolling through the page — a very long page can take a couple of minutes. You can close this popup.';
+      capturePageError.style.color = 'var(--color-text-tertiary)';
+      capturePageError.style.display = 'block';
+    }, 1200);
+
+    chrome.runtime.sendMessage({ action: 'capturePage' }, (res) => {
+      clearTimeout(slowHint);
+      capturePageError.style.color = '#B42318';
+      if (chrome.runtime.lastError || !res || res.error) {
+        const code = res?.error;
+        // Chrome blocks captureVisibleTab on its own pages, the Web Store and the PDF
+        // viewer. Say which it is, rather than leaving the button on "Capturing…".
+        capturePageError.textContent =
+          code === 'capture_blocked' ? "Chrome doesn't allow capturing this page. Try a normal web page."
+          : code === 'storage_full'  ? "Couldn't hand the capture over — browser storage is full."
+          : code === 'no_tab'        ? 'No active tab to capture.'
+          : 'Capture failed. Please try again.';
+        capturePageError.style.display = 'block';
+        capturePageBtn.disabled = false;
+        capturePageBtn.style.opacity = '1';
+        capturePageBtn.style.cursor = 'pointer';
+        capturePageLabel.textContent = 'Save current page as PDF';
+        return;
+      }
+      // The service worker opens the builder tab itself, which also closes this popup.
+      // Nothing to restore here, and nothing is reported about a truncated capture —
+      // the PDF says that on its own last page, where it will still be readable later.
+      capturePageLabel.textContent = 'Building PDF…';
+    });
   });
 
   // ── Privacy Policy ─────────────────────────────────────────────────────────
@@ -179,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (guides.length === 0) {
           const empty = document.createElement('div');
-          empty.style.cssText = 'text-align: center; font-size: 12px; color: var(--color-text-tertiary); padding: 18px 0;';
+          empty.style.cssText = 'text-align: center; font-size: 12px; color: var(--color-text-tertiary); padding: 14px 0;';
           empty.textContent = 'No guides recorded yet';
           guidesList.appendChild(empty);
           return;
@@ -189,7 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const isActiveRecording = activeGuideId && guide.id === activeGuideId;
 
           const div = document.createElement('div');
-          div.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 10px 10px; border-radius: 8px; cursor: pointer; transition: background 0.15s;';
+          div.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 7px 8px; border-radius: 7px; cursor: pointer; transition: background 0.15s;';
           div.onmouseover = () => div.style.background = 'var(--color-background-secondary)';
           div.onmouseout  = () => div.style.background = 'transparent';
 
@@ -197,10 +243,10 @@ document.addEventListener('DOMContentLoaded', () => {
           left.style.cssText = 'display: flex; align-items: center; gap: 10px; min-width: 0;';
 
           const iconWrap = document.createElement('div');
-          iconWrap.style.cssText = 'width: 30px; height: 30px; border-radius: 7px; background: var(--color-background-info); display: flex; align-items: center; justify-content: center; flex-shrink: 0;';
+          iconWrap.style.cssText = 'width: 26px; height: 26px; border-radius: 6px; background: var(--color-background-info); display: flex; align-items: center; justify-content: center; flex-shrink: 0;';
           const icon = document.createElement('i');
           icon.className = 'ti ti-file-description';
-          icon.style.cssText = 'font-size: 15px; color: var(--color-text-info);';
+          icon.style.cssText = 'font-size: 13px; color: var(--color-text-info);';
           icon.setAttribute('aria-hidden', 'true');
           iconWrap.appendChild(icon);
 
@@ -208,7 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
           textWrap.style.cssText = 'min-width: 0;';
 
           const titleP = document.createElement('p');
-          titleP.style.cssText = 'margin: 0; font-size: 13px; font-weight: 500; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px;';
+          titleP.style.cssText = 'margin: 0; font-size: 13px; font-weight: 500; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 152px;';
           titleP.title = guide.title || 'Untitled';
           titleP.textContent = guide.title || 'Untitled';
 

@@ -102,18 +102,22 @@ async function checkQuota() {
 }
 
 // ─── Image Compression (OffscreenCanvas — no UI thread blocking) ─────────────
+// Decoded by hand rather than with fetch(), which MV3's CSP blocks for data URLs.
+function dataUrlToBlob(dataUrl) {
+  const parts = dataUrl.split(',');
+  const mime  = parts[0].match(/:(.*?);/)[1];
+  const bstr  = atob(parts[1]);
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) {
+    u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new Blob([u8arr], { type: mime });
+}
+
 async function compressScreenshot(dataUrl, stepType = 'click') {
   try {
-    // Decode base64 data URL synchronously to prevent MV3 fetch CSP errors
-    const parts = dataUrl.split(',');
-    const mime = parts[0].match(/:(.*?);/)[1];
-    const bstr = atob(parts[1]);
-    let n = bstr.length;
-    const u8arr = new Uint8Array(n);
-    while (n--) {
-      u8arr[n] = bstr.charCodeAt(n);
-    }
-    const inputBlob = new Blob([u8arr], { type: mime });
+    const inputBlob = dataUrlToBlob(dataUrl);
 
     const bitmap    = await createImageBitmap(inputBlob);
     let { width, height } = bitmap;
@@ -132,6 +136,238 @@ async function compressScreenshot(dataUrl, stepType = 'click') {
   } catch (e) {
     console.error("STEPLY compressScreenshot ERROR:", e);
     return null;
+  }
+}
+
+// ─── Full-page capture (scroll and stitch) ───────────────────────────────────
+// captureVisibleTab only ever returns the visible area, so a full-page shot means
+// scrolling the page a viewport at a time and stitching the slices together. The
+// content script does the scrolling; only this side can call captureVisibleTab.
+const CAPTURE_THROTTLE_MS = 600;   // captureVisibleTab is quota'd at ~2 calls/second
+const MAX_CAPTURE_SLICES  = 150;   // ~90s of throttled capture
+const MAX_STITCH_PX       = 15000; // per chunk — Chrome refuses canvases taller than ~16384px
+// Across all chunks. Not a technical ceiling — chunking removed that — just the point at
+// which an infinite-scroll feed has to be called finished. Set past the longest real
+// documents (the longest Wikipedia articles land around 60,000px at this output width),
+// and it lines up with the slice cap at a typical viewport, so neither bound surprises
+// the other.
+const MAX_TOTAL_PX        = 120000;
+const CAPTURE_QUALITY     = 0.9;   // higher than JPEG_QUALITY: this image becomes the PDF
+
+// A service worker has no FileReader and OffscreenCanvas has no toDataURL, so the
+// stitched image has to be base64'd by hand. Chunked because fromCharCode.apply
+// overflows the stack on a multi-megabyte buffer.
+async function blobToDataUrl(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return `data:${blob.type || 'image/jpeg'};base64,${btoa(binary)}`;
+}
+
+// Resolves to null instead of rejecting when there's no content script on the tab,
+// so a page we can't drive degrades to a viewport capture rather than an error.
+function sendToTab(tabId, message, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+    setTimeout(() => finish(null), timeoutMs);
+    try {
+      chrome.tabs.sendMessage(tabId, message, (res) => {
+        if (chrome.runtime.lastError) finish(null); else finish(res);
+      });
+    } catch (e) { finish(null); }
+  });
+}
+
+function captureVisible(windowId) {
+  return Promise.race([
+    new Promise(res => {
+      chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 90 }, (url) => {
+        if (chrome.runtime.lastError) res(null); else res(url);
+      });
+    }),
+    new Promise(res => setTimeout(() => res(null), 4000))
+  ]);
+}
+
+// Only re-encodes when the capture is wider than the extension's standard width, so a
+// 1280-wide viewport shot reaches the PDF as the exact JPEG Chrome handed us.
+async function shrinkBlob(blob) {
+  const bmp = await createImageBitmap(blob);
+  try {
+    if (bmp.width <= MAX_IMG_WIDTH) {
+      return { dataUrl: await blobToDataUrl(blob), width: bmp.width, height: bmp.height };
+    }
+    const width  = MAX_IMG_WIDTH;
+    const height = Math.max(1, Math.round(bmp.height * width / bmp.width));
+    const canvas = new OffscreenCanvas(width, height);
+    canvas.getContext('2d').drawImage(bmp, 0, 0, width, height);
+    const out = await canvas.convertToBlob({ type: 'image/jpeg', quality: CAPTURE_QUALITY });
+    return { dataUrl: await blobToDataUrl(out), width, height };
+  } finally {
+    bmp.close();
+  }
+}
+
+async function singleViewportShot(tab, fullPage) {
+  const url = await captureVisible(tab.windowId);
+  if (!url) return null;
+  let chunk;
+  try {
+    chunk = await shrinkBlob(dataUrlToBlob(url));
+  } catch (e) {
+    // Resizing is an optimisation, not the point — hand back what Chrome captured and
+    // let the builder measure it.
+    chunk = { dataUrl: url, width: 0, height: 0 };
+  }
+  return { chunks: [chunk], slices: 1, fullPage, truncated: false };
+}
+
+async function captureFullPage(tab) {
+  const metrics = await sendToTab(tab.id, { action: 'fullPagePrepare' });
+
+  // No content script, or preparation failed: capture the visible area, which is what
+  // the recording path does anyway. A viewport shot beats no shot.
+  if (!metrics || !metrics.ok) return singleViewportShot(tab, false);
+
+  try {
+    const dpr       = metrics.dpr || 1;
+    const viewportH = metrics.viewportH;
+    const viewportW = metrics.viewportW || MAX_IMG_WIDTH;
+    let pageHeight  = metrics.pageHeight;
+
+    // Page already fits on one screen — nothing to stitch, and it *is* the full page.
+    if (!viewportH || pageHeight <= viewportH + 4) return singleViewportShot(tab, true);
+
+    // The stitch is written straight at output scale instead of at device pixels and
+    // downscaled afterwards. The device-pixel canvas is what hits Chrome's ~16384px
+    // ceiling first — on a 2x display it ran out of room at about seven screens, which
+    // is why long pages were coming back truncated — and it costs four times the memory
+    // for pixels about to be thrown away. `pxPerCss` is how tall one CSS pixel of page
+    // is in the stitched image, which is what bounds how far down we can usefully go.
+    const outScale = Math.min(1, MAX_IMG_WIDTH / Math.max(1, Math.round(viewportW * dpr)));
+    const pxPerCss = Math.max(0.01, dpr * outScale);
+    // Bounded by the whole capture now, not by one canvas — the stitch below is cut into
+    // as many canvases as it needs, so Chrome's per-canvas ceiling no longer decides how
+    // far down the page we get.
+    const maxScrollY = Math.floor(MAX_TOTAL_PX / pxPerCss) - viewportH;
+
+    const slices = [];
+    let reachedBottom = false;
+    let lastY = -1;
+    let y = 0;
+
+    for (let i = 0; i < MAX_CAPTURE_SLICES; i++) {
+      // Throttled between captures, not before the first, so a short page stays quick.
+      if (i > 0) await new Promise(r => setTimeout(r, CAPTURE_THROTTLE_MS));
+
+      const pos = await sendToTab(tab.id, { action: 'fullPageScroll', y });
+      const actualY = pos && typeof pos.y === 'number' ? pos.y : y;
+      // Re-measured each slice: lazy-loading pages grow as you scroll into them.
+      if (pos && pos.pageHeight) pageHeight = Math.max(pageHeight, pos.pageHeight);
+
+      // The page didn't move, so there is nothing new below. Checked before capturing so
+      // a page that clamps or hijacks scrolling costs neither a duplicate slice nor
+      // another throttle wait. Only counts as the bottom if we're actually at it —
+      // otherwise this is a page we couldn't scroll, and the result is partial.
+      if (i > 0 && actualY <= lastY) {
+        reachedBottom = actualY + viewportH >= pageHeight - 1;
+        break;
+      }
+
+      const url = await captureVisible(tab.windowId);
+      if (!url) break;
+      // Held as a blob, not as the data URL Chrome handed back. A long page is dozens of
+      // screens, and a JS string costs two bytes a character — keeping a hundred-odd
+      // base64 screenshots as strings is hundreds of megabytes of worker memory, where the
+      // same screens as blobs are the size of the JPEGs themselves.
+      slices.push({ blob: dataUrlToBlob(url), y: actualY });
+      lastY = actualY;
+
+      if (actualY + viewportH >= pageHeight - 1) { reachedBottom = true; break; }
+      y = actualY + viewportH;
+      // The page is longer than one pass will take, and the PDF says so on its last page.
+      if (y > maxScrollY) break;
+    }
+
+    if (slices.length === 0) return null;
+    if (slices.length === 1) {
+      let only;
+      try {
+        only = await shrinkBlob(slices[0].blob);
+      } catch (e) {
+        // Resizing is an optimisation; handing back the raw capture beats reporting this
+        // as a page Chrome wouldn't let us capture.
+        only = { dataUrl: await blobToDataUrl(slices[0].blob), width: 0, height: 0 };
+      }
+      return { chunks: [only], slices: 1, fullPage: true, truncated: !reachedBottom };
+    }
+
+    const probe = await createImageBitmap(slices[0].blob);
+    const outW  = Math.max(1, Math.round(probe.width * outScale));
+    probe.close();
+
+    const lastTop  = slices[slices.length - 1].y;
+    const contentH = Math.min(pageHeight, lastTop + viewportH);
+
+    // Consecutive screens are grouped into chunks no taller than one canvas will go.
+    // Chrome refuses anything past ~16384px, and that — not the page — is what stopped
+    // a long capture at 27 screens. Each chunk ends exactly where the next begins, on a
+    // screen boundary, so the PDF can run them end to end with nothing lost between
+    // them. The document was always going to be cut into pages anyway.
+    //
+    // The screens are spread evenly over the chunks they need rather than packed to the
+    // ceiling, because packing leaves the remainder in the last chunk — a chunk holding
+    // one screen becomes a PDF page holding one screen.
+    const sliceH         = Math.max(1, viewportH * pxPerCss);
+    const perChunkCap    = Math.max(1, Math.floor(MAX_STITCH_PX / sliceH));
+    const chunkCount     = Math.max(1, Math.ceil(slices.length / perChunkCap));
+    const slicesPerChunk = Math.ceil(slices.length / chunkCount);
+
+    const groups = [];
+    for (let i = 0; i < slices.length; i += slicesPerChunk) {
+      const to = Math.min(i + slicesPerChunk - 1, slices.length - 1);
+      groups.push({
+        from: i,
+        to,
+        top: slices[i].y,
+        bottom: (to + 1 < slices.length) ? slices[to + 1].y : contentH
+      });
+    }
+
+    const chunks = [];
+    for (const g of groups) {
+      const height = Math.max(1, Math.min(Math.round((g.bottom - g.top) * pxPerCss), MAX_STITCH_PX));
+      const canvas = new OffscreenCanvas(outW, height);
+      const ctx = canvas.getContext('2d');
+      for (let i = g.from; i <= g.to; i++) {
+        const bmp = await createImageBitmap(slices[i].blob);
+        // Drawn in scroll order at each screen's offset within this chunk, so where the
+        // last screen of the page overlaps the one above it (a page rarely divides evenly
+        // into screens) it simply repaints that band with the same pixels. The extra pixel
+        // of height absorbs the rounding between screens, so no hairline of background
+        // shows at a seam — the next screen down paints over it.
+        ctx.drawImage(
+          bmp, 0, Math.round((slices[i].y - g.top) * pxPerCss),
+          outW, Math.ceil(bmp.height * outScale) + 1
+        );
+        bmp.close();
+      }
+      const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: CAPTURE_QUALITY });
+      chunks.push({ dataUrl: await blobToDataUrl(blob), width: outW, height });
+    }
+
+    return { chunks, slices: slices.length, fullPage: true, truncated: !reachedBottom };
+  } catch (e) {
+    console.error('STEPLY captureFullPage error:', e);
+    return null;
+  } finally {
+    // Always put the page back — scroll position, sticky/fixed elements, scroll-behavior
+    // — even if the capture threw halfway through.
+    await sendToTab(tab.id, { action: 'fullPageRestore' });
   }
 }
 
@@ -769,6 +1005,83 @@ async function handleMessage(message, sender, sendResponse) {
     };
     tx.oncomplete = () => { if (!hasResponded) sendResponse({ success: true }); };
     tx.onerror = (e) => { if (!hasResponded) sendResponse({ error: e.target.error?.toString() || 'Transaction failed' }); };
+    return;
+  }
+
+  // ── Capture the current page and hand it to the PDF builder ─────────────────
+  // Deliberately standalone: it never reads or writes `currentGuide`, `isRecording`,
+  // `sessionStepIds` or the step queue, so using it during a recording cannot disturb
+  // that recording. It writes nothing to IndexedDB either — the capture leaves the
+  // browser as a PDF file and is not kept as a guide — so recorded guides, stored
+  // screenshots and the storage quota are all untouched by it. It also uses no
+  // permission the extension doesn't already have; captureVisibleTab is the same call
+  // the recording path makes, and activeTab is granted by the user opening the popup.
+  if (message.action === 'capturePage') {
+    try {
+      const tab = await new Promise(r =>
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => r(tabs && tabs[0]))
+      );
+      if (!tab || !tab.id) { sendResponse({ error: 'no_tab' }); return; }
+
+      // Drop any earlier hand-off before starting, so an abandoned capture can't sit in
+      // storage.local alongside this one.
+      await chrome.storage.local.remove('steplyPendingCapture');
+
+      // Hide the recording HUD if one is up so it isn't baked into the capture.
+      // Best-effort — there may be no content script on this tab at all.
+      await new Promise((res) => {
+        chrome.tabs.sendMessage(tab.id, { action: 'hideHUD' }, () => {
+          if (chrome.runtime.lastError) {}
+          res();
+        });
+      });
+      await new Promise(r => setTimeout(r, 150));
+
+      // Full page where possible; falls back to the visible area when the page can't be
+      // driven (no content script, a single-screen page, or anything going wrong).
+      const shot = await captureFullPage(tab);
+
+      chrome.tabs.sendMessage(tab.id, { action: 'showHUD' }, () => {
+        if (chrome.runtime.lastError) {}
+      });
+
+      // Nothing is handed on until the capture has succeeded, so a page Chrome refuses
+      // to capture (chrome://, the Web Store, the PDF viewer) can't open a builder tab
+      // with nothing in it.
+      if (!shot || !shot.chunks || !shot.chunks.length) { sendResponse({ error: 'capture_blocked' }); return; }
+
+      // Handed over through storage.local rather than inside a message: the stitched
+      // JPEG is megabytes of base64, and the builder page wants it the moment it loads
+      // rather than having to ask for it. That page removes the key once it has read it.
+      try {
+        await chrome.storage.local.set({
+          steplyPendingCapture: {
+            // One entry per canvas the stitch needed; the builder runs them end to end.
+            chunks:     shot.chunks,
+            pageUrl:    tab.url || '',
+            pageTitle:  tab.title || '',
+            capturedAt: new Date().toISOString(),
+            screens:    shot.slices,
+            // Carried through to the PDF's last page, so a page longer than one pass
+            // can hold is never passed off as the whole thing.
+            truncated:  !!shot.truncated
+          }
+        });
+      } catch (e) {
+        console.error('STEPLY capturePage handoff failed:', e);
+        sendResponse({ error: 'storage_full' });
+        return;
+      }
+
+      // Opened from here rather than from the popup because the popup closes the moment
+      // the user clicks the page, and on a long capture that happens well before the
+      // screenshots are finished. The service worker is still around either way.
+      chrome.tabs.create({ url: chrome.runtime.getURL('capture.html') });
+      sendResponse({ success: true, screens: shot.slices, truncated: !!shot.truncated });
+    } catch (e) {
+      console.error('STEPLY capturePage error:', e);
+      sendResponse({ error: e.toString() });
+    }
     return;
   }
 }

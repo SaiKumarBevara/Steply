@@ -8,6 +8,9 @@ let hudElement = null;
 let isHudClosedSession = false;
 let lastScrollY = window.scrollY;
 let lastScrollX = window.scrollX;
+// Everything the full-page capture changed on the page, so it can be put back exactly.
+// Null whenever no capture is running.
+let fullPageState = null;
 
 // SCOPED HUD STYLES
 const hudStyle = document.createElement('style');
@@ -261,6 +264,122 @@ chrome.storage.onChanged.addListener((changes) => {
 
 // Listen for messages from the background service worker
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // ── Full-page capture ───────────────────────────────────────────────────────
+  // The background worker drives this, because captureVisibleTab is only callable
+  // there. This side owns scrolling the page and putting it back exactly as found.
+  // These three handlers reply asynchronously, hence `return true`; the recording
+  // branches below are untouched and still reply synchronously.
+  if (request.action === 'fullPagePrepare') {
+    try {
+      const doc = document.documentElement;
+      fullPageState = {
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        scrollBehavior: doc.style.getPropertyValue('scroll-behavior'),
+        scrollBehaviorPriority: doc.style.getPropertyPriority('scroll-behavior'),
+        sticky: [],
+        fixed: []
+      };
+
+      // A smooth-scrolling page would still be gliding when the capture fires, which
+      // tears the slices. Force instant jumps for the duration.
+      doc.style.setProperty('scroll-behavior', 'auto', 'important');
+
+      // Pinned elements stay put while the page scrolls, so a nav bar or cookie banner
+      // would be stamped into every slice. Handled by position type, because the two
+      // behave differently:
+      //   sticky -> static: a sticky element already occupies its space in normal flow,
+      //             so this drops it to its natural spot without reflowing anything.
+      //   fixed  -> hidden (later slices only): fixed elements are out of flow, so
+      //             hiding cannot reflow the page. Forcing them static *would* reflow,
+      //             which is why they are hidden rather than repositioned. The first
+      //             slice keeps them so the top of the capture looks like the real page.
+      const all = document.body ? document.body.querySelectorAll('*') : [];
+      for (const el of all) {
+        const pos = getComputedStyle(el).position;
+        if (pos !== 'fixed' && pos !== 'sticky') continue;
+        const saved = {
+          el,
+          prop: pos === 'sticky' ? 'position' : 'visibility',
+          prev: null,
+          priority: ''
+        };
+        saved.prev = el.style.getPropertyValue(saved.prop);
+        saved.priority = el.style.getPropertyPriority(saved.prop);
+        if (pos === 'sticky') {
+          el.style.setProperty('position', 'static', 'important');
+          fullPageState.sticky.push(saved);
+        } else {
+          fullPageState.fixed.push(saved);
+        }
+      }
+
+      sendResponse({
+        ok: true,
+        pageHeight: Math.max(doc.scrollHeight, document.body ? document.body.scrollHeight : 0),
+        viewportH: window.innerHeight,
+        viewportW: window.innerWidth,
+        dpr: window.devicePixelRatio || 1
+      });
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e) });
+    }
+    return true;
+  }
+
+  if (request.action === 'fullPageScroll') {
+    try {
+      // Fixed elements are hidden for every slice but the first.
+      const hideFixed = request.y > 0;
+      for (const s of fullPageState ? fullPageState.fixed : []) {
+        if (hideFixed) s.el.style.setProperty('visibility', 'hidden', 'important');
+        else if (s.prev) s.el.style.setProperty('visibility', s.prev, s.priority);
+        else s.el.style.removeProperty('visibility');
+      }
+
+      window.scrollTo(0, request.y);
+      // Two frames lets the browser paint the new position (and start any lazy images)
+      // before the worker captures.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        setTimeout(() => {
+          const doc = document.documentElement;
+          sendResponse({
+            y: window.scrollY,
+            // Re-measured every slice: lazy-loading pages grow as you scroll into them.
+            pageHeight: Math.max(doc.scrollHeight, document.body ? document.body.scrollHeight : 0)
+          });
+        }, 90);
+      }));
+    } catch (e) {
+      sendResponse({ y: window.scrollY, error: String(e) });
+    }
+    return true;
+  }
+
+  if (request.action === 'fullPageRestore') {
+    try {
+      if (fullPageState) {
+        const doc = document.documentElement;
+        for (const s of [...fullPageState.sticky, ...fullPageState.fixed]) {
+          if (s.prev) s.el.style.setProperty(s.prop, s.prev, s.priority);
+          else s.el.style.removeProperty(s.prop);
+        }
+        if (fullPageState.scrollBehavior) {
+          doc.style.setProperty('scroll-behavior', fullPageState.scrollBehavior, fullPageState.scrollBehaviorPriority);
+        } else {
+          doc.style.removeProperty('scroll-behavior');
+        }
+        window.scrollTo(fullPageState.scrollX, fullPageState.scrollY);
+        fullPageState = null;
+      }
+      sendResponse({ ok: true });
+    } catch (e) {
+      fullPageState = null;
+      sendResponse({ ok: false, error: String(e) });
+    }
+    return true;
+  }
+
   if (request.action === 'startRecording') {
     isRecording = true;
     isPaused = false;
@@ -561,8 +680,20 @@ function generateActionDescription(el, typeOverride = null) {
   if (labelText === 'a field') {
       // fallback for non-input elements
       if (el.innerText) {
-        const text = el.innerText.trim().replace(/\n/g, ' ');
-        labelText = text.length > 30 ? text.substring(0, 30) + '...' : text;
+        const text = el.innerText.trim().replace(/\s+/g, ' ');
+        // 30 characters cut mid-word often enough to be the first thing you notice in
+        // an exported document — a link reading "Wikipedia, the free encyclopedia"
+        // came out as "Wikipedia, the free encycloped...". 70 fits the exported step
+        // heading on one or two lines, and the cut now lands on a word boundary when
+        // there is one nearby. Only affects newly recorded steps; stored actions are
+        // whatever text they were saved with.
+        if (text.length > 70) {
+          const cut = text.substring(0, 70);
+          const lastSpace = cut.lastIndexOf(' ');
+          labelText = (lastSpace > 45 ? cut.substring(0, lastSpace) : cut) + '...';
+        } else {
+          labelText = text;
+        }
       }
   }
   
@@ -709,6 +840,9 @@ const SCROLL_MIN_PX = 50;        // catch smaller movements
 
 window.addEventListener('scroll', (event) => {
   if (!isRecording || isPaused) return;
+  // A full-page capture scrolls the document itself. Without this, capturing a page
+  // while a recording is running would record a "Scrolled page" step for every slice.
+  if (fullPageState) return;
 
   // Identify the actual scroll target (window or specific element)
   const target = (event.target === document || event.target === window) ? window : event.target;

@@ -5,6 +5,7 @@ module.exports = {
   entry: {
     popup: './src/popup.js',
     dashboard: './src/Dashboard.jsx',
+    capture: './src/capture.js',
     content: './src/content.js',
     background: './src/background.js'
   },
@@ -45,6 +46,7 @@ module.exports = {
         { from: 'manifest.json', to: 'manifest.json' },
         { from: 'src/popup.html', to: 'popup.html', noErrorOnMissing: true },
         { from: 'src/dashboard.html', to: 'dashboard.html', noErrorOnMissing: true },
+        { from: 'src/capture.html', to: 'capture.html', noErrorOnMissing: true },
         { from: 'src/privacy.html', to: 'privacy.html', noErrorOnMissing: true },
         { from: 'images', to: 'images', noErrorOnMissing: true },
         // Tabler icon webfont, vendored locally. Previously loaded from
@@ -81,7 +83,10 @@ module.exports = {
   ],
   optimization: {
     splitChunks: {
-      chunks: (chunk) => chunk.name === 'dashboard',
+      // The capture page is in here so it shares the dashboard's jsPDF chunk instead of
+      // bundling a second 600 KB copy of it. popup/content/background stay out: they
+      // must each be a single self-contained file.
+      chunks: (chunk) => chunk.name === 'dashboard' || chunk.name === 'capture',
       cacheGroups: {
         react: {
           test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
