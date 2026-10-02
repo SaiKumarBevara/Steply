@@ -12,6 +12,7 @@ Stop wasting time taking manual screenshots and formatting documents. Simply cli
 *   **Ultimate Single-Click Copy (New):** Share faster than ever. Copy a step’s Title, Description, and Screenshot all at once. Paste into Slack, Gmail, or Teams—the entire step appears perfectly formatted with the image!
 *   **Professional Dashboard:** A sleek, high-performance UI to manage your library. Edit action text, add notes, and organize steps effortlessly.
 *   **Bulk Export Manager:** Combine multiple guides into one professional document—perfect for complex onboarding or full-system documentation.
+*   **Save Any Page as PDF (New):** One click scrolls the entire page—past the fold, all the way down—and saves it as a clean, multi-page A4 PDF. Pinned headers and cookie banners are stripped so they don't repeat on every page. Nothing is saved as a guide; you just get the file.
 *   **Privacy & Security First:** Steply is 100% local with absolutely no remotely hosted code. No servers, no telemetry. Your guides stay on your machine.
 
 ## 🛠 How it Works
@@ -19,6 +20,8 @@ Stop wasting time taking manual screenshots and formatting documents. Simply cli
 1.  Open the Steply popup and click **Start Recording**.
 2.  Navigate any website. Every time you click or scroll, Steply captures the screen and logs the action.
 3.  Click **Stop Recording** when you're done.
-4.  Open the **Dashboard** to review your new guide, tweak the highlight colors, and export it as a PDF or Word document!
+4.  Open the **Dashboard** to review your new guide, tweak the highlight colors, and export it as a PDF, Word, Markdown, HTML or JSON file!
+
+Need the page itself rather than a walkthrough of it? Open the popup and click **Save current page as PDF** — no recording required.
 
 Whether you're creating onboarding materials, bug reports, or standard operating procedures (SOPs), Steply makes documentation effortless and elegant.

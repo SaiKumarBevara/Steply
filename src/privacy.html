@@ -348,7 +348,7 @@
         <span class="meta-dot"></span>
         <span>Effective: May 29, 2026</span>
         <span class="meta-dot"></span>
-        <span>Last updated: May 29, 2026</span>
+        <span>Last updated: October 2, 2026</span>
       </div>
     </div>
 
@@ -364,7 +364,8 @@
     <div class="section">
       <h2>What Steply does</h2>
       <p>Steply is a Chrome extension that records your browser interactions — clicks, scrolls, and navigation — and
-        turns them into step-by-step guides with screenshots. All of this happens entirely within your browser.</p>
+        turns them into step-by-step guides with screenshots. It can also save the page you are currently on as a
+        PDF. All of this happens entirely within your browser.</p>
     </div>
 
     <div class="section">
@@ -399,6 +400,11 @@
           <span class="fact-check">✓</span>
           <span><strong>Local Redaction.</strong> The redaction tool (blurring) runs entirely on your local machine using an offscreen canvas. No image data is ever sent to a server for processing.</span>
         </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>Local document generation.</strong> Every PDF, Word, Markdown, HTML and JSON file Steply
+            produces is assembled inside your browser. Nothing is uploaded for conversion or rendering.</span>
+        </li>
       </ul>
     </div>
 
@@ -414,8 +420,8 @@
 
       <div class="permission-block" style="margin-top: 10px;">
         <span class="perm-name">activeTab</span>
-        <p>Required to access the currently active tab when you trigger a recording. Used solely to capture the
-          screenshot of the page at the moment of each recorded step.</p>
+        <p>Required to access the currently active tab when you trigger a recording, or when you ask Steply to save the
+          page as a PDF. Used solely to capture the screenshot of the page at that moment.</p>
       </div>
 
       <div class="permission-block" style="margin-top: 10px;">
@@ -424,7 +430,45 @@
           device.</p>
       </div>
 
+      <div class="permission-block" style="margin-top: 10px;">
+        <span class="perm-name">unlimitedStorage</span>
+        <p>Screenshots are large. This lifts Chrome's default storage cap so a long guide is not cut short, and so a
+          full-page capture can be assembled. It grants no access to anything — only more room on your own disk.</p>
+      </div>
 
+      <p style="margin-top: 14px;">Steply requests no other permissions. In particular it does not use the
+        <code>downloads</code> permission — files are saved through an ordinary browser download, the same way clicking
+        a download link does — nor the <code>debugger</code> permission, nor any host access beyond the above.</p>
+    </div>
+
+    <div class="section">
+      <h2>Saving a page as PDF</h2>
+      <p>Steply can scroll the page you are on, capture it a screen at a time, and save the whole thing as a PDF. This
+        is deliberately kept separate from recording:</p>
+      <ul class="fact-list">
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>It is never stored.</strong> The capture is not saved as a guide and is never written to
+            IndexedDB. The only lasting copy is the PDF file you download.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>It is held briefly, then deleted.</strong> The screenshots are assembled on a separate
+            extension page, so they are passed to it through local extension storage. That temporary copy is deleted
+            as soon as the PDF is built, and any leftover from an abandoned capture is cleared the next time you start
+            one.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>It stays on your device.</strong> The PDF is assembled by JavaScript running in your browser
+            and handed to Chrome's normal download mechanism. The page content is not uploaded anywhere.</span>
+        </li>
+        <li>
+          <span class="fact-check">✓</span>
+          <span><strong>It does not touch your recordings.</strong> Using it while recording does not add a step to, or
+            otherwise alter, the guide being recorded.</span>
+        </li>
+      </ul>
     </div>
 
     <div class="section">

@@ -1,6 +1,6 @@
 # Steply — Chrome Extension
 
-> Auto-generate step-by-step guides by recording your browser interactions. Captures clicks, text inputs, scrolls, and screenshots — then exports to PDF, Word, or Markdown.
+> Auto-generate step-by-step guides by recording your browser interactions. Captures clicks, text inputs, scrolls, and screenshots — then exports to PDF, Word, Markdown, HTML, or JSON. Also saves any single page, in full, as a multi-page PDF.
 
 ---
 
@@ -12,11 +12,16 @@
 5. [How to Record a Guide](#how-to-record-a-guide)
 6. [Using the Dashboard](#using-the-dashboard)
 7. [Exporting a Guide](#exporting-a-guide)
-8. [Resume Recording (Add Steps to Existing Guide)](#resume-recording)
-9. [Keyboard Shortcut](#keyboard-shortcut)
-10. [Features Reference](#features-reference)
-11. [Project Structure](#project-structure)
-12. [Troubleshooting](#troubleshooting)
+8. [Save Current Page as PDF](#save-current-page-as-pdf)
+9. [Screenshot Editor (Annotations & Redaction)](#screenshot-editor-annotations--redaction)
+10. [Ultimate Single-Click Copy](#ultimate-single-click-copy)
+11. [Bulk Export Manager](#bulk-export-manager)
+12. [Resume Recording (Add Steps to Existing Guide)](#resume-recording)
+13. [Keyboard Shortcut](#keyboard-shortcut)
+14. [Features Reference](#features-reference)
+15. [Project Structure](#project-structure)
+16. [Troubleshooting](#troubleshooting)
+17. [Development Workflow (Quick Reference)](#development-workflow-quick-reference)
 
 ---
 
@@ -131,13 +136,43 @@ The Dashboard is where you view, edit, and manage all your guides.
 
 ## Exporting a Guide
 
-Open a guide in the Dashboard, then use the export buttons in the top-right:
+Open a guide in the Dashboard, then use the export dropdown in the top-right:
 
-| **Export PDF** | `.pdf` file | All steps with annotated screenshots |
-| **Export Word** | `.docx` file | All steps with embedded annotated images |
-| **Export Markdown** | `.md` file | All steps with inline base64 screenshots |
+| Format | File | Contents |
+|---|---|---|
+| **PDF** | `.pdf` file | All steps with annotated screenshots, two per page |
+| **Word** | `.docx` file | All steps with embedded annotated images |
+| **Markdown** | `.md` file | All steps with inline base64 screenshots |
+| **HTML** | `.html` file | Self-contained page with embedded screenshots |
+| **JSON** | `.json` file | Structured bundle — step text, metadata, element data, annotations, and screenshots |
 
-> **Annotated screenshots:** All exports include the red highlight box drawn over the clicked element — identical to what you see in the dashboard.
+> **Annotated screenshots:** All exports include the red highlight box drawn over the clicked element, plus any annotations you added — identical to what you see in the dashboard.
+
+---
+
+## Save Current Page as PDF
+
+Separate from recording: this takes the page you are looking at and saves **the whole page**
+— not just the visible area — as a multi-page A4 PDF.
+
+### How to use it
+1. Go to the page you want.
+2. Open the Steply popup and click **"Save current page as PDF"** (bottom of the popup).
+3. Steply scrolls the page from top to bottom, capturing a screen at a time. Leave it alone while it works — you can close the popup, but don't switch tabs.
+4. A new tab opens, builds the PDF, and downloads it automatically. The filename is the page title plus the date.
+
+### What it does for you
+- **Captures past the fold.** The page is scrolled and the screens are stitched together, so you get the full document, not a screenshot.
+- **Strips pinned elements.** Sticky headers are dropped into normal flow and fixed elements (nav bars, cookie banners, chat widgets) are hidden after the first screen, so they don't repeat down every page of the PDF. The page is restored exactly as it was afterwards.
+- **Splits tall captures automatically.** Chrome refuses to allocate a canvas taller than roughly 16,384px, so very long pages are stitched in several chunks. The chunk boundaries fall on screen boundaries and run end to end in the PDF, so nothing is lost or duplicated between them.
+- **Footers every page** with the source URL and a `page / total` counter.
+
+### Important notes
+- **Nothing is saved as a guide.** This writes nothing to IndexedDB and does not appear in your guide list. The PDF file is the only output.
+- **Safe during recording.** Using it mid-recording does not add a step or disturb the guide being recorded. The recording HUD is hidden so it isn't baked into the capture.
+- **It takes time.** Chrome rate-limits screen capture to about two per second, so a long page genuinely takes 30–90 seconds.
+- **Limits.** Capture stops at 150 screens or 120,000 output pixels, whichever comes first — comfortably past the longest real documents, but an infinite-scroll feed will stop there. When that happens the PDF says so in the footer of its last page rather than passing a partial capture off as complete.
+- **Blocked pages.** Chrome does not allow capture on `chrome://` pages, the Web Store, or the built-in PDF viewer. You'll get a clear message instead of a hung button.
 
 ---
 
@@ -262,10 +297,23 @@ You can open the Steply popup at any time using your keyboard:
 ### 📤 Exports
 | Format | Details |
 |---|---|
-| **PDF** | All steps with text + annotated screenshots via `jsPDF` |
+| **PDF** | All steps with text + annotated screenshots via `jsPDF`, two per page; a figure too tall for a half-page slot is given a page of its own |
 | **Word (.docx)** | All steps with embedded annotated images via `docx` library |
 | **Markdown (.md)** | Steps with inline base64-embedded annotated screenshots |
-| **Bulk Export** | Merge multiple guides into a single PDF, Word, or Markdown file |
+| **HTML (.html)** | Self-contained single file with embedded screenshots |
+| **JSON (.json)** | Structured bundle including element data and annotations |
+| **Bulk Export** | Merge multiple guides into a single document in any of the above formats |
+
+### 📄 Full-Page PDF Capture
+| Feature | Details |
+|---|---|
+| **Scroll and stitch** | The content script scrolls the page; the service worker calls `captureVisibleTab` per screen and stitches the results. Throttled to 600ms because Chrome caps capture at ~2 calls/second |
+| **Chunked stitching** | Chrome refuses canvases taller than ~16384px, so the stitch is cut into chunks of 15,000px. Boundaries land on screen boundaries and chunks run end to end in the PDF, so nothing is lost at a seam |
+| **Pinned element handling** | `sticky` → `static` (already in flow, so no reflow); `fixed` → hidden after the first screen (out of flow, so hiding cannot reflow). All original inline styles restored afterwards |
+| **Memory discipline** | Screens are held as `Blob`s, not base64 strings, during capture — 150 base64 screenshots as JS strings would be hundreds of megabytes |
+| **Lazy-load aware** | Page height is re-measured on every screen, so pages that grow as you scroll into them are followed |
+| **Capture limits** | 150 screens / 120,000 output pixels. On hitting either, the PDF's last page carries a note saying the capture stopped early |
+| **No storage impact** | Writes nothing to IndexedDB; uses no permission beyond the ones recording already needs |
 
 
 ### 🖥️ UI
@@ -282,13 +330,17 @@ You can open the Steply popup at any time using your keyboard:
 ```
 files/
 ├── src/                    # Source files (edit these)
-│   ├── content.js          # Injected into every web page — tracks clicks, scrolls, inputs
-│   ├── background.js       # Service worker — manages IndexedDB, screenshots, state
-│   ├── popup.js            # Popup UI logic (Start/Stop recording, recent guides)
+│   ├── content.js          # Injected into every web page — tracks clicks, scrolls, inputs,
+│   │                       #   and drives scrolling for the full-page capture
+│   ├── background.js       # Service worker — manages IndexedDB, screenshots, state,
+│   │                       #   and the scroll-and-stitch page capture
+│   ├── popup.js            # Popup UI logic (Start/Stop recording, recent guides, page PDF)
 │   ├── popup.html          # Popup HTML
 │   ├── dashboard.html      # Dashboard HTML entry point
-│   ├── Dashboard.jsx       # React dashboard — view, edit, export guides
+│   ├── Dashboard.jsx       # React dashboard — view, edit, annotate, export guides
 │   ├── Dashboard.css       # Dashboard styles
+│   ├── capture.html        # "Save current page as PDF" builder page
+│   ├── capture.js          # Turns a stitched capture into a multi-page A4 PDF
 │   └── privacy.html        # Privacy policy page, opened from the popup
 ├── images/                 # Extension icons (16 / 48 / 128 px)
 ├── dist/                   # Built output (load THIS folder in Chrome)
@@ -297,8 +349,15 @@ files/
 ├── remove-cdn-loader.js    # Webpack loader — strips a CDN URL out of jsPDF
 ├── test-extension.js       # Puppeteer smoke test (node test-extension.js)
 ├── package.json            # Dependencies and build scripts
+├── PRIVACY_POLICY.md       # Privacy policy (source of truth for src/privacy.html)
+├── STORE_LISTING.md        # Chrome Web Store listing copy
 └── README.md               # This file
 ```
+
+> **Note:** `capture.js` shares the dashboard's `export-libs` chunk so jsPDF isn't bundled
+> twice. If you add a new entry point that needs jsPDF, add it to the `splitChunks.chunks`
+> predicate in `webpack.config.js` — `popup`, `content` and `background` are deliberately
+> excluded because each must be a single self-contained file.
 
 ---
 
@@ -324,6 +383,25 @@ files/
 ### Extension not loading (manifest error)
 - Make sure you selected the `/dist` folder, not the root project folder.
 - Run `npm run build` first — the `/dist` folder must exist.
+
+### "Save current page as PDF" says Chrome doesn't allow capturing this page
+- Chrome blocks `captureVisibleTab` on `chrome://` pages, the Chrome Web Store, and the built-in PDF viewer.
+- **Fix:** Try it on a normal website. There is no workaround — this is enforced by the browser.
+
+### The PDF's last page says the capture stopped early
+- The page exceeded 150 screens or 120,000 output pixels. This is almost always an infinite-scroll feed rather than a document.
+- **If you need more:** raise `MAX_CAPTURE_SLICES` / `MAX_TOTAL_PX` in `src/background.js`. Both cost time (600ms per screen) and memory, and produce a longer PDF — the current values are set past the longest real documents.
+
+### A nav bar or cookie banner repeats on every page of the PDF
+- Fixed and sticky elements are stripped after the first screen, but a page can pin something in a way that isn't detectable from `getComputedStyle` (for example a JS-repositioned element).
+- **Workaround:** dismiss the banner before capturing.
+
+### The page looks wrong after a capture
+- The capture temporarily changes `scroll-behavior` and the position of pinned elements, then restores them. Restoration runs in a `finally` block so it happens even if the capture fails.
+- **Fix:** refresh the page. Nothing is persisted, so a reload always returns it to normal.
+
+### Capture is slow
+- Expected. Chrome rate-limits screen capture to ~2 calls/second, so Steply waits 600ms between screens. A 50-screen page takes ~30 seconds. Lowering the throttle risks `MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota exceeded` errors and torn captures.
 
 ---
 
