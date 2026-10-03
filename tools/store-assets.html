@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Steply — Chrome Web Store asset studio</title>
+  <!--
+    Generates the images the Chrome Web Store listing needs, at exactly the pixel sizes it
+    demands, and downloads them as PNGs.
+
+    Open this file directly in Chrome (double-click it). It is a development tool only — it
+    lives in tools/ rather than src/ so the build never copies it into dist/ and it is never
+    part of the published extension.
+
+    Everything renders on a canvas at the exact target size, so there is no scaling or
+    screenshot-of-a-screenshot loss. The logo is inlined as base64 rather than loaded from
+    ../images/, because a file:// image would taint the canvas and make toBlob() throw.
+    Screenshots you load come in through FileReader, which is also untainted.
+  -->
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue: #185FA5;
+      --blue-light: #E6F1FB;
+      --dark: #111827;
+      --grey: #6B7280;
+      --line: #E5E7EB;
+      --bg: #F9FAFB;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--dark);
+      display: flex;
+      min-height: 100vh;
+      font-size: 14px;
+    }
+
+    /* ── Controls ── */
+    aside {
+      width: 330px;
+      flex-shrink: 0;
+      background: #fff;
+      border-right: 1px solid var(--line);
+      padding: 22px;
+      overflow-y: auto;
+      height: 100vh;
+    }
+
+    aside h1 { font-size: 16px; font-weight: 600; margin-bottom: 3px; }
+    aside .sub { font-size: 12px; color: var(--grey); margin-bottom: 20px; }
+
+    .group { margin-bottom: 18px; }
+    .group > label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--grey);
+      margin-bottom: 7px;
+    }
+
+    select, input[type=text], textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      font: inherit;
+      font-size: 13px;
+      background: #fff;
+      color: var(--dark);
+    }
+
+    textarea { resize: vertical; min-height: 56px; line-height: 1.45; }
+    select:focus, input:focus, textarea:focus { outline: 2px solid var(--blue-light); border-color: var(--blue); }
+
+    input[type=file] { font-size: 12px; width: 100%; }
+
+    .seg { display: flex; gap: 6px; flex-wrap: wrap; }
+    .seg button {
+      flex: 1;
+      min-width: 70px;
+      padding: 7px 4px;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 7px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--grey);
+    }
+    .seg button.on { background: var(--blue-light); border-color: var(--blue); color: var(--blue); font-weight: 600; }
+
+    .hint { font-size: 11.5px; color: var(--grey); line-height: 1.5; margin-top: 7px; }
+    .warn { font-size: 11.5px; color: #B45309; line-height: 1.5; margin-top: 7px; display: none; }
+
+    #dl {
+      width: 100%;
+      padding: 11px;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #dl:hover { background: #15518d; }
+    #dl:disabled { background: #9CA3AF; cursor: default; }
+
+    /* ── Preview ── */
+    main {
+      flex: 1;
+      padding: 28px;
+      overflow: auto;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .sizetag {
+      font-size: 12px;
+      color: var(--grey);
+      font-variant-numeric: tabular-nums;
+    }
+
+    #wrap {
+      background:
+        linear-gradient(45deg, #eee 25%, transparent 25%, transparent 75%, #eee 75%),
+        linear-gradient(45deg, #eee 25%, transparent 25%, transparent 75%, #eee 75%) 10px 10px,
+        #fff;
+      background-size: 20px 20px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.09);
+      line-height: 0;
+    }
+
+    canvas { max-width: 100%; height: auto; display: block; }
+  </style>
+</head>
+
+<body>
+
+  <aside>
+    <h1>Store asset studio</h1>
+    <p class="sub">Renders Chrome Web Store images at exact size.</p>
+
+    <div class="group">
+      <label>Asset</label>
+      <div class="seg" id="assetSeg">
+        <button data-asset="screenshot" class="on">Screenshot</button>
+        <button data-asset="tile">Small tile</button>
+        <button data-asset="marquee">Marquee</button>
+      </div>
+      <p class="hint" id="assetHint"></p>
+    </div>
+
+    <div class="group" id="shotGroup">
+      <label>Your screenshot</label>
+      <input type="file" id="file" accept="image/png,image/jpeg,image/webp" />
+      <p class="hint">Capture the real UI first (Win+Shift+S), then load it here. It gets framed and placed for you.</p>
+      <p class="warn" id="shotWarn"></p>
+    </div>
+
+    <div class="group" id="presetGroup">
+      <label>Preset</label>
+      <select id="preset"></select>
+    </div>
+
+    <div class="group">
+      <label>Headline</label>
+      <input type="text" id="headline" />
+    </div>
+
+    <div class="group">
+      <label>Subtitle</label>
+      <textarea id="subtitle"></textarea>
+    </div>
+
+    <div class="group">
+      <label>Theme</label>
+      <div class="seg" id="themeSeg">
+        <button data-theme="light" class="on">Light</button>
+        <button data-theme="blue">Blue</button>
+        <button data-theme="dark">Dark</button>
+      </div>
+    </div>
+
+    <div class="group" id="fitGroup">
+      <label>Image fit</label>
+      <div class="seg" id="fitSeg">
+        <button data-fit="contain" class="on">Fit (no crop)</button>
+        <button data-fit="cover">Fill (crops)</button>
+      </div>
+      <p class="hint">Fit shows the whole screenshot. Fill removes the letterboxing but cuts the edges.</p>
+    </div>
+
+    <button id="dl">Download PNG</button>
+    <p class="hint" id="dlHint"></p>
+  </aside>
+
+  <main>
+    <span class="sizetag" id="sizetag"></span>
+    <div id="wrap"><canvas id="cv"></canvas></div>
+  </main>
+
+  <script>
+    const LOGO_B64 = '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';
+
+    // Chrome Web Store's required pixel sizes. Do not change these — the dashboard
+    // rejects anything that isn't an exact match.
+    const SPECS = {
+      screenshot: { w: 1280, h: 800,  label: 'Screenshot',  note: 'Required. 1 to 5 of them. 1280x800.' },
+      tile:       { w: 440,  h: 280,  label: 'Small tile',  note: 'Optional. Shown in search results. 440x280.' },
+      marquee:    { w: 1400, h: 560,  label: 'Marquee',     note: 'Optional. Only used if featured. 1400x560.' }
+    };
+
+    const PRESETS = [
+      { k: 'record',  h: 'Record once. Get a guide.',        s: 'Every click captured, described and screenshotted — automatically.' },
+      { k: 'dash',    h: 'Your whole library, one place.',   s: 'Edit step text, recolour highlights, reorder and export.' },
+      { k: 'annot',   h: 'Mark it up in seconds.',           s: 'Arrows, boxes, labels and numbered badges. Fully reversible.' },
+      { k: 'export',  h: 'Export anywhere.',                 s: 'PDF, Word, Markdown, HTML or JSON — screenshots included.' },
+      { k: 'pagepdf', h: 'Save any page as a PDF.',          s: 'Scrolls the entire page, not just what fits on screen.' },
+      { k: 'privacy', h: '100% local. No account.',          s: 'Nothing is uploaded. No servers, no telemetry, no sign-up.' },
+      { k: 'custom',  h: '',                                 s: '' }
+    ];
+
+    const THEMES = {
+      light: { from: '#FFFFFF', to: '#E6F1FB', head: '#111827', sub: '#4B5563', word: '#111827', frame: '#FFFFFF', edge: 'rgba(17,24,39,0.10)' },
+      blue:  { from: '#1D6FBE', to: '#124B82', head: '#FFFFFF', sub: '#C9DFF4', word: '#FFFFFF', frame: '#FFFFFF', edge: 'rgba(0,0,0,0.22)' },
+      dark:  { from: '#1F2937', to: '#0B1220', head: '#F9FAFB', sub: '#9CA3AF', word: '#F9FAFB', frame: '#111827', edge: 'rgba(0,0,0,0.35)' }
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const cv = $('cv');
+    const ctx = cv.getContext('2d');
+
+    let state = { asset: 'screenshot', theme: 'light', fit: 'contain', shot: null };
+
+    const logo = new Image();
+    let logoReady = false;
+    logo.onload = () => { logoReady = true; render(); };
+    logo.src = 'data:image/png;base64,' + LOGO_B64;
+
+    // ── Canvas helpers ────────────────────────────────────────────────────────
+    const FONT = '"Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif';
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, r);
+    }
+
+    // Greedy wrap. Returns the lines rather than drawing, so the caller can centre the
+    // whole block vertically once it knows how tall it ended up.
+    function wrap(text, maxW) {
+      const words = String(text).split(/\s+/).filter(Boolean);
+      if (!words.length) return [];
+      const lines = [];
+      let line = words[0];
+      for (let i = 1; i < words.length; i++) {
+        const test = line + ' ' + words[i];
+        if (ctx.measureText(test).width > maxW) { lines.push(line); line = words[i]; }
+        else line = test;
+      }
+      lines.push(line);
+      return lines;
+    }
+
+    function drawLines(lines, cx, y, lh) {
+      lines.forEach((l, i) => ctx.fillText(l, cx, y + i * lh));
+    }
+
+    // Logo + wordmark, centred on cx. Returns nothing; callers position by baseline.
+    function lockup(cx, y, size, color) {
+      const gap = size * 0.34;
+      ctx.font = `600 ${size * 0.82}px ${FONT}`;
+      const tw = ctx.measureText('Steply').width;
+      const total = size + gap + tw;
+      const x = cx - total / 2;
+
+      if (logoReady) {
+        ctx.save();
+        roundRect(x, y - size / 2, size, size, size * 0.22);
+        ctx.clip();
+        ctx.drawImage(logo, x, y - size / 2, size, size);
+        ctx.restore();
+      }
+
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Steply', x + size + gap, y + size * 0.02);
+      ctx.textAlign = 'center';
+    }
+
+    function background(w, h, t) {
+      const g = ctx.createLinearGradient(0, 0, w * 0.4, h);
+      g.addColorStop(0, t.from);
+      g.addColorStop(1, t.to);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    // The screenshot inside a browser-ish frame, so it reads as a product shot rather
+    // than a floating rectangle.
+    function framedShot(x, y, w, h, t) {
+      const r = 12;
+      const bar = Math.round(h * 0.052);
+
+      ctx.save();
+      ctx.shadowColor = t.edge;
+      ctx.shadowBlur = 34;
+      ctx.shadowOffsetY = 14;
+      ctx.fillStyle = t.frame;
+      roundRect(x, y, w, h, r);
+      ctx.fill();
+      ctx.restore();
+
+      // Title bar with the three dots.
+      ctx.save();
+      roundRect(x, y, w, h, r);
+      ctx.clip();
+      ctx.fillStyle = state.theme === 'dark' ? '#1F2937' : '#F3F4F6';
+      ctx.fillRect(x, y, w, bar);
+      ctx.fillStyle = state.theme === 'dark' ? '#374151' : '#D1D5DB';
+      const dr = Math.max(3, bar * 0.17);
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(x + bar * 0.75 + i * dr * 3.1, y + bar / 2, dr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // The image itself, clipped to the frame's lower area.
+      const ix = x, iy = y + bar, iw = w, ih = h - bar;
+      ctx.save();
+      roundRect(x, y, w, h, r);
+      ctx.clip();
+      ctx.beginPath();
+      ctx.rect(ix, iy, iw, ih);
+      ctx.clip();
+
+      if (state.shot) {
+        const img = state.shot;
+        const sa = img.naturalWidth / img.naturalHeight;
+        const da = iw / ih;
+        let dw, dh;
+        if (state.fit === 'cover' ? sa > da : sa < da) { dh = ih; dw = ih * sa; }
+        else { dw = iw; dh = iw / sa; }
+        // Letterbox behind a "Fit" image so the gaps are a deliberate surface, not a hole.
+        if (state.fit === 'contain') {
+          ctx.fillStyle = state.theme === 'dark' ? '#0B1220' : '#FFFFFF';
+          ctx.fillRect(ix, iy, iw, ih);
+        }
+        ctx.drawImage(img, ix + (iw - dw) / 2, iy + (ih - dh) / 2, dw, dh);
+      } else {
+        ctx.fillStyle = state.theme === 'dark' ? '#0B1220' : '#F9FAFB';
+        ctx.fillRect(ix, iy, iw, ih);
+        ctx.fillStyle = '#9CA3AF';
+        ctx.font = `500 ${Math.round(ih * 0.055)}px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Load a screenshot on the left', ix + iw / 2, iy + ih / 2);
+      }
+      ctx.restore();
+    }
+
+    // ── The three layouts ─────────────────────────────────────────────────────
+    function drawScreenshot(w, h, t) {
+      background(w, h, t);
+      lockup(w / 2, 58, 30, t.word);
+
+      const head = $('headline').value.trim();
+      const sub = $('subtitle').value.trim();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+
+      let y = 132;
+      if (head) {
+        ctx.fillStyle = t.head;
+        ctx.font = `700 46px ${FONT}`;
+        const lines = wrap(head, w - 220);
+        drawLines(lines, w / 2, y, 54);
+        y += lines.length * 54;
+      }
+      if (sub) {
+        ctx.fillStyle = t.sub;
+        ctx.font = `400 20px ${FONT}`;
+        const lines = wrap(sub, w - 300);
+        y += 8;
+        drawLines(lines, w / 2, y, 28);
+        y += lines.length * 28;
+      }
+
+      const top = Math.max(y + 26, 180);
+      const fw = w - 150;
+      framedShot((w - fw) / 2, top, fw, h - top - 40, t);
+    }
+
+    function drawTile(w, h, t) {
+      background(w, h, t);
+      lockup(w / 2, h * 0.38, Math.round(h * 0.2), t.word);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      const sub = $('subtitle').value.trim() || 'Step-by-step guides, automatically.';
+      ctx.fillStyle = t.sub;
+      ctx.font = `400 ${Math.round(h * 0.062)}px ${FONT}`;
+      drawLines(wrap(sub, w - 70), w / 2, h * 0.63, h * 0.085);
+    }
+
+    function drawMarquee(w, h, t) {
+      background(w, h, t);
+      lockup(w / 2, h * 0.3, Math.round(h * 0.13), t.word);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+
+      let y = h * 0.52;
+      const head = $('headline').value.trim();
+      if (head) {
+        ctx.fillStyle = t.head;
+        ctx.font = `700 ${Math.round(h * 0.095)}px ${FONT}`;
+        const lines = wrap(head, w - 240);
+        drawLines(lines, w / 2, y, h * 0.115);
+        y += lines.length * h * 0.115;
+      }
+      const sub = $('subtitle').value.trim();
+      if (sub) {
+        ctx.fillStyle = t.sub;
+        ctx.font = `400 ${Math.round(h * 0.045)}px ${FONT}`;
+        drawLines(wrap(sub, w - 320), w / 2, y + h * 0.045, h * 0.06);
+      }
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────
+    function render() {
+      const spec = SPECS[state.asset];
+      cv.width = spec.w;
+      cv.height = spec.h;
+      const t = THEMES[state.theme];
+
+      ctx.clearRect(0, 0, spec.w, spec.h);
+      if (state.asset === 'screenshot') drawScreenshot(spec.w, spec.h, t);
+      else if (state.asset === 'tile') drawTile(spec.w, spec.h, t);
+      else drawMarquee(spec.w, spec.h, t);
+
+      $('sizetag').textContent = `${spec.label} — ${spec.w} x ${spec.h} px`;
+      $('assetHint').textContent = spec.note;
+      const isShot = state.asset === 'screenshot';
+      $('shotGroup').style.display = isShot ? '' : 'none';
+      $('fitGroup').style.display = isShot && state.shot ? '' : 'none';
+      $('presetGroup').style.display = state.asset === 'tile' ? 'none' : '';
+      $('dlHint').textContent = isShot && !state.shot
+        ? 'Load a screenshot before downloading — the placeholder would ship otherwise.'
+        : '';
+      $('dl').disabled = isShot && !state.shot;
+    }
+
+    // ── Wiring ────────────────────────────────────────────────────────────────
+    const presetSel = $('preset');
+    PRESETS.forEach((p) => {
+      const o = document.createElement('option');
+      o.value = p.k;
+      o.textContent = p.k === 'custom' ? 'Custom (write your own)' : p.h;
+      presetSel.appendChild(o);
+    });
+
+    function applyPreset() {
+      const p = PRESETS.find((x) => x.k === presetSel.value);
+      if (!p || p.k === 'custom') return;
+      $('headline').value = p.h;
+      $('subtitle').value = p.s;
+      render();
+    }
+    presetSel.addEventListener('change', applyPreset);
+
+    function seg(id, key, after) {
+      $(id).addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        [...$(id).children].forEach((b) => b.classList.toggle('on', b === btn));
+        state[key] = btn.dataset[key];
+        if (after) after();
+        render();
+      });
+    }
+    seg('assetSeg', 'asset');
+    seg('themeSeg', 'theme');
+    seg('fitSeg', 'fit');
+
+    ['headline', 'subtitle'].forEach((id) => $(id).addEventListener('input', render));
+
+    $('file').addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          state.shot = img;
+          // 1280x800 is 1.6:1. A capture far from that gets heavily letterboxed, which
+          // looks like a mistake in the listing, so say so rather than silently doing it.
+          const a = img.naturalWidth / img.naturalHeight;
+          const warn = $('shotWarn');
+          if (a < 1.15 || a > 2.3) {
+            warn.textContent = `This image is ${img.naturalWidth}x${img.naturalHeight} (${a.toFixed(2)}:1). The frame is about 1.75:1, so expect visible bars. A wider capture fills it better.`;
+            warn.style.display = 'block';
+          } else {
+            warn.style.display = 'none';
+          }
+          render();
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(f);
+    });
+
+    $('dl').addEventListener('click', () => {
+      const spec = SPECS[state.asset];
+      const slug = (presetSel.value && state.asset !== 'tile' ? presetSel.value : state.asset);
+      cv.toBlob((blob) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `steply-${state.asset}-${slug}-${spec.w}x${spec.h}.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }, 'image/png');
+    });
+
+    applyPreset();
+    render();
+  </script>
+</body>
+
+</html>
