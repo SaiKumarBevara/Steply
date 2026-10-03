@@ -349,6 +349,10 @@ function drawHighlightBox(ctx, img, step, colorKey) {
 // whatever the capture's pixel size.
 const ANNOT_COLORS = ['#FF3B30', '#FF9500', '#34C759', '#007AFF', '#1C1C1E', '#FFFFFF'];
 const ANNOT_DEFAULT_TEXT_SIZE = 0.022; // fraction of image height
+// Depth of the editor's undo/redo stack. Each entry is one snapshot of the edit
+// list — a few hundred bytes — so this is about keeping an open editor's memory
+// flat during a long markup session, not about a real ceiling.
+const ANNOT_HISTORY_LIMIT = 60;
 
 // Pen weights scale with the capture so markup reads the same on a 1280px and a
 // 2560px screenshot. Shared by the renderer and the hit-test geometry below so the
@@ -366,7 +370,7 @@ const ANNOT_TOOLS = [
   { id: 'text',   icon: 'ti-typography',      title: 'Text label — click to place' },
   { id: 'badge',  icon: 'ti-circle-number-1', title: 'Numbered badge — click to place' },
   { id: 'blur',   icon: 'ti-shield-lock',     title: 'Blur sensitive info — drag over it' },
-  { id: 'select', icon: 'ti-pointer',         title: 'Select — click a shape, then press Delete' },
+  { id: 'select', icon: 'ti-pointer',         title: 'Select — drag to move, pull a corner to resize, Delete to remove' },
 ];
 
 // Irreversibly blurs regions of a canvas. Lifted unchanged from the old standalone
@@ -411,12 +415,123 @@ function annotationBounds(a, W, H) {
     const size = Math.max(12, (a.size || ANNOT_DEFAULT_TEXT_SIZE) * H);
     return { x: a.x * W, y: a.y * H, w: Math.max(size, (a.text || '').length * size * 0.6), h: size * 1.2 };
   }
-  const r = annotationMetrics(W).radius; // badge
+  const r = annotationMetrics(W).radius * (a.scale || 1); // badge
   return { x: a.x * W - r, y: a.y * H - r, w: r * 2, h: r * 2 };
 }
 
 function newAnnotationId() {
   return 'an_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+// ─── Moving and resizing a placed annotation ─────────────────────────────────
+// Everything below operates on normalised coordinates and is pure: each function
+// returns a new annotation rather than mutating, so the undo history can hold
+// plain snapshots of the edit list.
+
+// Text keeps being stored as a fraction of image HEIGHT — existing saved labels
+// are already in those units and re-basing them would resize markup in guides
+// people have already exported. But choosing the *default* off the height is what
+// made labels explode on a full-page capture: 0.022 of a 15,000px scroll shot is a
+// 330px font. Every other pen weight here scales with width, so the default does
+// too, converted back into height units for storage. On an ordinary viewport
+// capture the min() keeps the long-standing 0.022, so nothing visibly changes.
+function defaultTextSize(W, H) {
+  if (!W || !H) return ANNOT_DEFAULT_TEXT_SIZE;
+  return Math.min(ANNOT_DEFAULT_TEXT_SIZE, (W * 0.018) / H);
+}
+
+// Grab squares, sized off the capture like every other piece of chrome so they
+// stay clickable on a 2560px-wide screenshot.
+function handleSize(W) {
+  return Math.max(9, W * 0.008);
+}
+
+function moveAnnotation(a, dx, dy) {
+  if (a.type === 'arrow') {
+    return { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy };
+  }
+  return { ...a, x: a.x + dx, y: a.y + dy };
+}
+
+// Handle positions in canvas pixels. Arrows get an endpoint each; rectangles get
+// four corners; text and badges scale uniformly, so one corner is enough.
+function annotationHandles(a, W, H) {
+  if (a.type === 'arrow') {
+    return [
+      { id: 'p1', x: a.x1 * W, y: a.y1 * H, cursor: 'move' },
+      { id: 'p2', x: a.x2 * W, y: a.y2 * H, cursor: 'move' },
+    ];
+  }
+  const b = annotationBounds(a, W, H);
+  if (a.type === 'rect' || a.type === 'blur') {
+    return [
+      { id: 'nw', x: b.x,       y: b.y,       cursor: 'nwse-resize' },
+      { id: 'ne', x: b.x + b.w, y: b.y,       cursor: 'nesw-resize' },
+      { id: 'sw', x: b.x,       y: b.y + b.h, cursor: 'nesw-resize' },
+      { id: 'se', x: b.x + b.w, y: b.y + b.h, cursor: 'nwse-resize' },
+    ];
+  }
+  return [{ id: 'scale', x: b.x + b.w, y: b.y + b.h, cursor: 'nwse-resize' }];
+}
+
+// `orig` is always the annotation as it was when the drag started, never the
+// live one. Resizing off the live shape would compound its own output frame by
+// frame and the shape would run away from the pointer.
+function resizeAnnotation(orig, handle, pos, W, H) {
+  if (orig.type === 'arrow') {
+    const n = { x: pos.x / W, y: pos.y / H };
+    return handle === 'p1' ? { ...orig, x1: n.x, y1: n.y } : { ...orig, x2: n.x, y2: n.y };
+  }
+  if (orig.type === 'rect' || orig.type === 'blur') {
+    // The corner opposite the one being dragged stays pinned.
+    const ax = (handle === 'ne' || handle === 'se') ? orig.x : orig.x + orig.w;
+    const ay = (handle === 'sw' || handle === 'se') ? orig.y : orig.y + orig.h;
+    const nx = pos.x / W, ny = pos.y / H;
+    return {
+      ...orig,
+      x: Math.min(ax, nx), y: Math.min(ay, ny),
+      w: Math.abs(nx - ax), h: Math.abs(ny - ay),
+    };
+  }
+  // Text and badges scale by how much further the pointer is from the shape's
+  // anchor than the handle started out. Measuring against the handle's own start
+  // position makes the ratio exactly 1 at the moment of grab, so the shape does
+  // not jump when it is picked up.
+  const start = annotationHandles(orig, W, H).find(h => h.id === handle);
+  if (!start) return orig;
+  const ax = orig.x * W, ay = orig.y * H;
+  const d0 = Math.hypot(start.x - ax, start.y - ay) || 1;
+  const d1 = Math.hypot(pos.x - ax, pos.y - ay);
+  const ratio = d1 / d0;
+  if (orig.type === 'text') {
+    const size = (orig.size || ANNOT_DEFAULT_TEXT_SIZE) * ratio;
+    return { ...orig, size: Math.max(0.003, Math.min(0.5, size)) };
+  }
+  if (orig.type === 'badge') {
+    return { ...orig, scale: Math.max(0.4, Math.min(6, (orig.scale || 1) * ratio)) };
+  }
+  return orig;
+}
+
+// Dashed outline so the user can see what Delete will remove, plus the grab
+// squares. Editor-only — never part of drawAnnotations, so no selection chrome
+// can leak into an export.
+function drawSelectionUI(ctx, a, W, H) {
+  const b   = annotationBounds(a, W, H);
+  const pad = Math.max(6, W * 0.006);
+  const hs  = handleSize(W);
+  ctx.save();
+  ctx.strokeStyle = '#007AFF';
+  ctx.lineWidth   = Math.max(2, W * 0.002);
+  ctx.setLineDash([pad, pad * 0.7]);
+  ctx.strokeRect(b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2);
+  ctx.setLineDash([]);
+  for (const h of annotationHandles(a, W, H)) {
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(h.x - hs / 2, h.y - hs / 2, hs, hs);
+    ctx.strokeRect(h.x - hs / 2, h.y - hs / 2, hs, hs);
+  }
+  ctx.restore();
 }
 
 function drawAnnotations(ctx, canvas, annotations) {
@@ -466,17 +581,20 @@ function drawAnnotations(ctx, canvas, annotations) {
     } else if (a.type === 'badge') {
       badgeNum += 1;
       const cx = a.x * W, cy = a.y * H;
+      // scale arrived with resize handles; a badge saved before that has no
+      // scale field and renders at exactly the size it always did.
+      const r = radius * (a.scale || 1);
       ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.lineWidth = Math.max(2, radius * 0.12);
+      ctx.lineWidth = Math.max(2, r * 0.12);
       ctx.stroke();
       ctx.fillStyle = color === '#FFFFFF' ? '#1C1C1E' : '#FFFFFF';
-      ctx.font = `700 ${radius * 1.25}px "DM Sans", sans-serif`;
+      ctx.font = `700 ${r * 1.25}px "DM Sans", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(badgeNum), cx, cy + radius * 0.05);
+      ctx.fillText(String(badgeNum), cx, cy + r * 0.05);
     }
     ctx.restore();
   }
@@ -608,19 +726,63 @@ function StepEditorWorkspace({
 
   const [tool, setTool]   = useState('arrow');
   const [color, setColor] = useState(ANNOT_COLORS[0]);
-  // One ordered list of every edit. Derived views below keep draw order and badge
-  // numbering stable, and let a single undo stack cover both kinds.
-  const [edits, setEdits] = useState(
-    () => (Array.isArray(step.annotations) ? step.annotations : [])
-  );
+  // One ordered list of every edit, held as past/present/future so undo and redo
+  // cover both kinds. Snapshots of the whole list rather than inverse operations:
+  // the list is a handful of small objects, so copying it is free, and it means a
+  // delete or a drag is as reversible as a placement. The previous
+  // `edits.slice(0, -1)` undo could only ever pop the newest shape, which would
+  // have become actively wrong now that dragging doesn't append anything.
+  const [history, setHistory] = useState(() => ({
+    past: [],
+    present: Array.isArray(step.annotations) ? step.annotations : [],
+    future: [],
+  }));
+  const edits = history.present;
+  const canUndo = history.past.length > 0;
+  const canRedo = history.future.length > 0;
+
   const [draft, setDraft]           = useState(null);     // shape mid-drag
   const [selectedId, setSelectedId] = useState(null);
   const [textDraft, setTextDraft]   = useState(null);     // { x, y, color, value }
   const [saving, setSaving]         = useState(false);
+  const [cursor, setCursor]         = useState(null);     // select-tool affordance
   const isDrawing = useRef(false);
   const startRef  = useRef(null);
+  // Move/resize in progress: { mode, handle, id, orig, before, start, moved }
+  const dragRef   = useRef(null);
   const textInputRef = useRef(null);
   const textOpen = !!textDraft;
+
+  // A new present, with the old one pushed onto the undo stack. Any redo branch
+  // is discarded, which is the standard linear-history behaviour.
+  const commit = (next) => setHistory(h => {
+    const value = typeof next === 'function' ? next(h.present) : next;
+    return {
+      past: [...h.past, h.present].slice(-ANNOT_HISTORY_LIMIT),
+      present: value,
+      future: [],
+    };
+  });
+
+  // Mid-drag updates: replace the present without touching the stacks, or a
+  // single drag would bury the real previous state under a hundred mousemoves.
+  // handleMouseUp pushes the one pre-drag snapshot when the gesture ends.
+  const setPresent = (next) => setHistory(h => ({
+    ...h,
+    present: typeof next === 'function' ? next(h.present) : next,
+  }));
+
+  const undo = () => setHistory(h => (h.past.length ? {
+    past: h.past.slice(0, -1),
+    present: h.past[h.past.length - 1],
+    future: [h.present, ...h.future].slice(0, ANNOT_HISTORY_LIMIT),
+  } : h));
+
+  const redo = () => setHistory(h => (h.future.length ? {
+    past: [...h.past, h.present].slice(-ANNOT_HISTORY_LIMIT),
+    present: h.future[0],
+    future: h.future.slice(1),
+  } : h));
 
   const annotations = edits.filter(e => e.type !== 'blur');
   const blurRects   = edits.filter(e => e.type === 'blur');
@@ -697,19 +859,16 @@ function StepEditorWorkspace({
       drawTimestampOnCanvas(canvas, ctx, step.timestamp, timestampPosition, timestampStyle);
     }
 
-    // Dashed outline so the user can see what Delete will remove.
     const sel = edits.find(a => a.id === selectedId);
-    if (sel) {
-      const b = annotationBounds(sel, canvas.width, canvas.height);
-      const pad = Math.max(6, canvas.width * 0.006);
-      ctx.save();
-      ctx.strokeStyle = '#007AFF';
-      ctx.lineWidth = Math.max(2, canvas.width * 0.002);
-      ctx.setLineDash([pad, pad * 0.7]);
-      ctx.strokeRect(b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2);
-      ctx.restore();
-    }
+    if (sel) drawSelectionUI(ctx, sel, canvas.width, canvas.height);
   }, [img, edits, draft, selectedId, highlightColor, showTimestamp, timestampPosition, timestampStyle]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Undo past a shape's creation, or redo past its deletion, can leave the
+  // selection pointing at an id that is no longer in the list — at which point
+  // Delete would silently do nothing. Drop it instead.
+  useEffect(() => {
+    if (selectedId && !edits.some(a => a.id === selectedId)) setSelectedId(null);
+  }, [edits, selectedId]);
 
   // Focus the label input when it opens. Keyed on open/closed rather than on the
   // draft object, so it doesn't re-focus (and reset the caret) on every keystroke.
@@ -731,19 +890,24 @@ function StepEditorWorkspace({
       if (textDraft) return; // don't steal keys while a label is being typed
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
         e.preventDefault();
-        setEdits(prev => prev.filter(a => a.id !== selectedId));
+        commit(prev => prev.filter(a => a.id !== selectedId));
         setSelectedId(null);
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      // Ctrl+Shift+Z and Ctrl+Y are both in common use for redo, so accept either.
+      if (k === 'y' || (k === 'z' && e.shiftKey)) {
         e.preventDefault();
-        setEdits(prev => prev.slice(0, -1));
-        setSelectedId(null);
+        redo();
+      } else if (k === 'z') {
+        e.preventDefault();
+        undo();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onCancel, textDraft, selectedId]);
+  }, [onCancel, textDraft, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Client coords → canvas pixels, clamped.
   const getCanvasPos = (e) => {
@@ -766,6 +930,15 @@ function StepEditorWorkspace({
     return { x: pos.x / (canvas?.width || 1), y: pos.y / (canvas?.height || 1) };
   };
 
+  // Topmost annotation under a point, or undefined. Reversed so the shape drawn
+  // last — the one visually on top — wins an overlap.
+  const findAnnotationAt = (pos, W, H) => [...edits].reverse().find(a => {
+    const b   = annotationBounds(a, W, H);
+    const pad = Math.max(8, W * 0.006);
+    return pos.x >= b.x - pad && pos.x <= b.x + b.w + pad
+        && pos.y >= b.y - pad && pos.y <= b.y + b.h + pad;
+  });
+
   const handleMouseDown = (e) => {
     // Without this the browser's default mousedown action moves focus off the
     // text input we are about to mount (a canvas isn't focusable, so focus falls
@@ -777,7 +950,7 @@ function StepEditorWorkspace({
     // swallowed by it, so consecutive labels need no extra click.
     if (textDraft) {
       const pending = textDraftToAnnotation();
-      if (pending) setEdits(prev => [...prev, pending]);
+      if (pending) commit(prev => [...prev, pending]);
       setTextDraft(null);
     }
 
@@ -787,14 +960,34 @@ function StepEditorWorkspace({
     if (tool === 'select') {
       const canvas = canvasRef.current;
       if (!canvas) return;
+      const W = canvas.width, H = canvas.height;
+
+      // A grab square on the already-selected shape takes priority over
+      // selecting whatever sits underneath it — the handles stick out past the
+      // shape's own bounds, so otherwise the corners would be unusable.
+      const sel = edits.find(a => a.id === selectedId);
+      if (sel) {
+        const slop = handleSize(W);
+        const grabbed = annotationHandles(sel, W, H).find(h =>
+          Math.abs(pos.x - h.x) <= slop && Math.abs(pos.y - h.y) <= slop);
+        if (grabbed) {
+          dragRef.current = {
+            mode: 'resize', handle: grabbed.id, id: sel.id,
+            orig: sel, before: edits, start: pos, moved: false,
+          };
+          return;
+        }
+      }
+
       // Topmost first, so the shape drawn last wins an overlap.
-      const hit = [...edits].reverse().find(a => {
-        const b = annotationBounds(a, canvas.width, canvas.height);
-        const pad = Math.max(8, canvas.width * 0.006);
-        return pos.x >= b.x - pad && pos.x <= b.x + b.w + pad
-            && pos.y >= b.y - pad && pos.y <= b.y + b.h + pad;
-      });
+      const hit = findAnnotationAt(pos, W, H);
       setSelectedId(hit ? hit.id : null);
+      if (hit) {
+        dragRef.current = {
+          mode: 'move', handle: null, id: hit.id,
+          orig: hit, before: edits, start: pos, moved: false,
+        };
+      }
       return;
     }
 
@@ -803,7 +996,7 @@ function StepEditorWorkspace({
     if (tool === 'blur' && !canBlur) return;
 
     if (tool === 'badge') {
-      setEdits(prev => [...prev, { id: newAnnotationId(), type: 'badge', color, x: n.x, y: n.y }]);
+      commit(prev => [...prev, { id: newAnnotationId(), type: 'badge', color, x: n.x, y: n.y }]);
       return;
     }
     if (tool === 'text') {
@@ -815,7 +1008,46 @@ function StepEditorWorkspace({
   };
 
   const handleMouseMove = (e) => {
-    if (!isDrawing.current || !startRef.current) return;
+    const canvas = canvasRef.current;
+
+    // Move or resize in progress. Always recomputed from the drag's starting
+    // snapshot, so the shape tracks the pointer instead of drifting.
+    const drag = dragRef.current;
+    if (drag && canvas) {
+      const pos = getCanvasPos(e);
+      // A plain click on a shape can still emit a mousemove at zero delta.
+      // Ignoring those keeps a simple select from landing an empty undo step.
+      if (!drag.moved
+          && Math.abs(pos.x - drag.start.x) <= 1
+          && Math.abs(pos.y - drag.start.y) <= 1) return;
+      const W = canvas.width, H = canvas.height;
+      const next = drag.mode === 'move'
+        ? moveAnnotation(drag.orig, (pos.x - drag.start.x) / W, (pos.y - drag.start.y) / H)
+        : resizeAnnotation(drag.orig, drag.handle, pos, W, H);
+      drag.moved = true;
+      setPresent(prev => prev.map(a => (a.id === drag.id ? next : a)));
+      return;
+    }
+
+    // Idle hover with the select tool: show what a drag here would do.
+    if (!isDrawing.current) {
+      if (tool !== 'select' || !canvas) return;
+      const pos = getCanvasPos(e);
+      const W = canvas.width, H = canvas.height;
+      const sel = edits.find(a => a.id === selectedId);
+      let next = null;
+      if (sel) {
+        const slop = handleSize(W);
+        const over = annotationHandles(sel, W, H).find(h =>
+          Math.abs(pos.x - h.x) <= slop && Math.abs(pos.y - h.y) <= slop);
+        if (over) next = over.cursor;
+      }
+      if (!next && findAnnotationAt(pos, W, H)) next = 'move';
+      if (next !== cursor) setCursor(next);
+      return;
+    }
+
+    if (!startRef.current) return;
     const n = toNorm(getCanvasPos(e));
     const s = startRef.current;
     if (tool === 'arrow') {
@@ -831,6 +1063,21 @@ function StepEditorWorkspace({
   };
 
   const handleMouseUp = () => {
+    // End of a move/resize. The pre-drag snapshot goes onto the undo stack now,
+    // as one entry for the whole gesture, keeping the already-current present.
+    const drag = dragRef.current;
+    if (drag) {
+      dragRef.current = null;
+      if (drag.moved) {
+        setHistory(h => ({
+          past: [...h.past, drag.before].slice(-ANNOT_HISTORY_LIMIT),
+          present: h.present,
+          future: [],
+        }));
+      }
+      return;
+    }
+
     if (!isDrawing.current) return;
     isDrawing.current = false;
     startRef.current  = null;
@@ -842,23 +1089,28 @@ function StepEditorWorkspace({
       ? Math.hypot(d.x2 - d.x1, d.y2 - d.y1)
       : Math.max(d.w, d.h);
     if (span < 0.015) return;
-    setEdits(prev => [...prev, { ...d, id: newAnnotationId() }]);
+    commit(prev => [...prev, { ...d, id: newAnnotationId() }]);
   };
 
   const textDraftToAnnotation = () => {
     const value = (textDraft?.value || '').trim();
     if (!value) return null;
+    const canvas = canvasRef.current;
     return {
       id: newAnnotationId(), type: 'text', color: textDraft.color,
-      x: textDraft.x, y: textDraft.y, text: value, size: ANNOT_DEFAULT_TEXT_SIZE,
+      x: textDraft.x, y: textDraft.y, text: value,
+      size: defaultTextSize(canvas?.width || img?.width, canvas?.height || img?.height),
     };
   };
 
   const commitTextDraft = () => {
     if (!textDraft) return;
     const a = textDraftToAnnotation();
-    if (a) setEdits(prev => [...prev, a]);
+    if (a) commit(prev => [...prev, a]);
     setTextDraft(null);
+    // Drop straight into select so the label can be dragged or scaled without
+    // a trip to the toolbar — resizing is the main reason to place one at all.
+    if (a) { setTool('select'); setSelectedId(a.id); }
   };
 
   // Renders the blurred screenshot that will replace the stored bitmap. Only the
@@ -908,7 +1160,7 @@ function StepEditorWorkspace({
           <i className="ti ti-pencil"></i>
           <div className="redact-info-text">
             <h3>Edit Screenshot</h3>
-            <p>Drag for arrows, boxes, blur · Click for text and badges</p>
+            <p>Drag for arrows, boxes, blur · Click for text and badges · Pick <i className="ti ti-pointer"></i> to move, resize or delete</p>
           </div>
         </div>
         <div className="annot-toolbar">
@@ -920,7 +1172,12 @@ function StepEditorWorkspace({
                 ? 'Blur is unavailable on this older step — its screenshot is stored in an earlier format'
                 : t.title}
               disabled={t.id === 'blur' && !canBlur}
-              onClick={() => { setTool(t.id); setSelectedId(null); }}
+              onClick={() => {
+                setTool(t.id);
+                setSelectedId(null);
+                dragRef.current = null;
+                setCursor(null);
+              }}
             ><i className={`ti ${t.icon}`}></i></button>
           ))}
           <span className="annot-divider" />
@@ -937,14 +1194,20 @@ function StepEditorWorkspace({
           <button
             className="annot-tool"
             title="Undo (Ctrl+Z)"
-            disabled={!edits.length}
-            onClick={() => { setEdits(prev => prev.slice(0, -1)); setSelectedId(null); }}
+            disabled={!canUndo}
+            onClick={undo}
           ><i className="ti ti-arrow-back-up"></i></button>
+          <button
+            className="annot-tool"
+            title="Redo (Ctrl+Shift+Z)"
+            disabled={!canRedo}
+            onClick={redo}
+          ><i className="ti ti-arrow-forward-up"></i></button>
           <button
             className="annot-tool"
             title="Remove all edits"
             disabled={!edits.length}
-            onClick={() => { setEdits([]); setSelectedId(null); }}
+            onClick={() => { commit([]); setSelectedId(null); }}
           ><i className="ti ti-trash"></i></button>
         </div>
         <div className="redact-actions">
@@ -972,6 +1235,9 @@ function StepEditorWorkspace({
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
             className={`redact-canvas ${tool === 'select' ? 'annot-select' : 'drawing'}`}
+            // Set inline so it can follow the pointer across handles; the class
+            // above supplies the resting cursor for each tool.
+            style={cursor ? { cursor } : undefined}
           />
           {textDraft && (
             <input
