@@ -64,6 +64,28 @@ function filenameFor(meta) {
   return `${base || 'page'} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.pdf`;
 }
 
+// Why a capture stopped where it did. A short capture used to be blamed on page length
+// whatever the cause was, which sent debugging in the wrong direction — an app shell
+// that scrolls an inner pane, or a screenshot quota Chrome refused, both read as "this
+// page is too long".
+const STOP_NOTES = {
+  no_content_script: "Steply couldn't drive this page, so only the visible area was captured.",
+  scroll_blocked:    "Steply couldn't scroll this page any further, so the capture stops here.",
+  capture_refused:   'Chrome refused to screenshot this page.',
+  capture_quota:     'Chrome stopped allowing screenshots partway down, so the capture stops here.',
+  length_cap:        null, // falls back to the page-length wording below
+  slice_cap:         null,
+};
+
+function stopNoteFor(meta) {
+  if (meta.fullPage === false) {
+    return STOP_NOTES[meta.reason] || 'Only the visible area of this page was captured.';
+  }
+  if (!meta.truncated) return null;
+  return STOP_NOTES[meta.reason]
+    || `Capture stopped after ${meta.screens} screens — this page is longer than Steply can capture in one pass.`;
+}
+
 // Source URL on the left, page number on the right, in the strip below the image.
 function stampFooter(doc, meta, page, total) {
   doc.setFont('helvetica', 'normal');
@@ -78,13 +100,11 @@ function stampFooter(doc, meta, page, total) {
 
   // Said on the page where the content actually stops, so a partial capture is never
   // handed over as if it were the whole page.
-  if (meta.truncated && page === total) {
+  const note = page === total ? stopNoteFor(meta) : null;
+  if (note) {
     doc.setFontSize(8);
     doc.setTextColor(180, 83, 9);
-    doc.text(
-      `Capture stopped after ${meta.screens} screens — this page is longer than Steply can capture in one pass.`,
-      PAGE_W / 2, PAGE_H - 8.5, { align: 'center' }
-    );
+    doc.text(note, PAGE_W / 2, PAGE_H - 8.5, { align: 'center' });
   }
 }
 
@@ -200,9 +220,8 @@ async function main() {
 
     setStatus(`Saved ${pages} ${pages === 1 ? 'page' : 'pages'}`, { done: true });
     el('meta').textContent = name;
-    if (meta.truncated) {
-      showNote(`Only the first ${meta.screens} screens fitted in one pass, so the PDF stops partway down this page. Its last page says so too.`);
-    }
+    const note = stopNoteFor(meta);
+    if (note) showNote(`${note} The PDF's last page says so too.`);
 
     // Chrome allows one download per page load without a click; if it decides this one
     // wasn't wanted, or the user loses the file, this button is a plain user gesture.

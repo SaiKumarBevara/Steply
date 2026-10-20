@@ -212,7 +212,7 @@ async function shrinkBlob(blob) {
   }
 }
 
-async function singleViewportShot(tab, fullPage) {
+async function singleViewportShot(tab, fullPage, reason) {
   const url = await captureVisible(tab.windowId);
   if (!url) return null;
   let chunk;
@@ -223,24 +223,32 @@ async function singleViewportShot(tab, fullPage) {
     // let the builder measure it.
     chunk = { dataUrl: url, width: 0, height: 0 };
   }
-  return { chunks: [chunk], slices: 1, fullPage, truncated: false };
+  return { chunks: [chunk], slices: 1, fullPage, truncated: false, reason };
 }
 
 async function captureFullPage(tab) {
   const metrics = await sendToTab(tab.id, { action: 'fullPagePrepare' });
 
   // No content script, or preparation failed: capture the visible area, which is what
-  // the recording path does anyway. A viewport shot beats no shot.
-  if (!metrics || !metrics.ok) return singleViewportShot(tab, false);
+  // the recording path does anyway. A viewport shot beats no shot — but it is reported
+  // as `fullPage: false` so the PDF can say so, rather than passing a single screen off
+  // as the whole page.
+  if (!metrics || !metrics.ok || !metrics.isTopFrame) return singleViewportShot(tab, false, 'no_content_script');
 
   try {
     const dpr       = metrics.dpr || 1;
+    const windowW   = metrics.windowW || MAX_IMG_WIDTH;
+    const windowH   = metrics.windowH || metrics.viewportH || 1;
     const viewportH = metrics.viewportH;
     const viewportW = metrics.viewportW || MAX_IMG_WIDTH;
+    // Set when an inner pane scrolls instead of the document: the rect of that pane
+    // within the window, in CSS pixels. captureVisibleTab always returns the whole
+    // window, so every screenshot has to be cropped down to this.
+    const paneRect  = metrics.paneScroll ? metrics.scrollerRect : null;
     let pageHeight  = metrics.pageHeight;
 
     // Page already fits on one screen — nothing to stitch, and it *is* the full page.
-    if (!viewportH || pageHeight <= viewportH + 4) return singleViewportShot(tab, true);
+    if (!viewportH || pageHeight <= viewportH + 4) return singleViewportShot(tab, true, 'single_screen');
 
     // The stitch is written straight at output scale instead of at device pixels and
     // downscaled afterwards. The device-pixel canvas is what hits Chrome's ~16384px
@@ -248,8 +256,10 @@ async function captureFullPage(tab) {
     // is why long pages were coming back truncated — and it costs four times the memory
     // for pixels about to be thrown away. `pxPerCss` is how tall one CSS pixel of page
     // is in the stitched image, which is what bounds how far down we can usefully go.
-    const outScale = Math.min(1, MAX_IMG_WIDTH / Math.max(1, Math.round(viewportW * dpr)));
-    const pxPerCss = Math.max(0.01, dpr * outScale);
+    // Provisional, and refined below once we can see what Chrome actually handed back.
+    // All it does here is bound how far down the page there is any point scrolling.
+    let outScale = Math.min(1, MAX_IMG_WIDTH / Math.max(1, Math.round(viewportW * dpr)));
+    let pxPerCss = Math.max(0.01, dpr * outScale);
     // Bounded by the whole capture now, not by one canvas — the stitch below is cut into
     // as many canvases as it needs, so Chrome's per-canvas ceiling no longer decides how
     // far down the page we get.
@@ -257,6 +267,9 @@ async function captureFullPage(tab) {
 
     const slices = [];
     let reachedBottom = false;
+    // Why the loop stopped, carried into the PDF's footer. A capture that stops short
+    // used to be blamed on page length whatever the real cause was.
+    let stopReason = 'complete';
     let lastY = -1;
     let y = 0;
 
@@ -275,11 +288,20 @@ async function captureFullPage(tab) {
       // otherwise this is a page we couldn't scroll, and the result is partial.
       if (i > 0 && actualY <= lastY) {
         reachedBottom = actualY + viewportH >= pageHeight - 1;
+        if (!reachedBottom) stopReason = 'scroll_blocked';
         break;
       }
 
-      const url = await captureVisible(tab.windowId);
-      if (!url) break;
+      // captureVisibleTab is quota'd at roughly two calls a second on a sliding window,
+      // and this loop runs close enough to that to trip it. A single refusal used to
+      // `break` and abandon the rest of the page, so it is retried before being treated
+      // as a wall.
+      let url = null;
+      for (let attempt = 0; attempt < 3 && !url; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 700 * attempt));
+        url = await captureVisible(tab.windowId);
+      }
+      if (!url) { stopReason = i === 0 ? 'capture_refused' : 'capture_quota'; break; }
       // Held as a blob, not as the data URL Chrome handed back. A long page is dozens of
       // screens, and a JS string costs two bytes a character — keeping a hundred-odd
       // base64 screenshots as strings is hundreds of megabytes of worker memory, where the
@@ -290,11 +312,13 @@ async function captureFullPage(tab) {
       if (actualY + viewportH >= pageHeight - 1) { reachedBottom = true; break; }
       y = actualY + viewportH;
       // The page is longer than one pass will take, and the PDF says so on its last page.
-      if (y > maxScrollY) break;
+      if (y > maxScrollY) { stopReason = 'length_cap'; break; }
+      if (i === MAX_CAPTURE_SLICES - 1) stopReason = 'slice_cap';
     }
 
     if (slices.length === 0) return null;
-    if (slices.length === 1) {
+    // A pane capture always goes through the cropping path below, even for one slice.
+    if (slices.length === 1 && !paneRect) {
       let only;
       try {
         only = await shrinkBlob(slices[0].blob);
@@ -303,12 +327,41 @@ async function captureFullPage(tab) {
         // as a page Chrome wouldn't let us capture.
         only = { dataUrl: await blobToDataUrl(slices[0].blob), width: 0, height: 0 };
       }
-      return { chunks: [only], slices: 1, fullPage: true, truncated: !reachedBottom };
+      return { chunks: [only], slices: 1, fullPage: true, truncated: !reachedBottom, reason: stopReason };
     }
 
     const probe = await createImageBitmap(slices[0].blob);
-    const outW  = Math.max(1, Math.round(probe.width * outScale));
+    const capW  = probe.width;
+    const capH  = probe.height;
     probe.close();
+
+    // Chrome's capture is not reliably innerWidth x innerHeight x dpr — page zoom and
+    // scrollbars both shift it — so the pane rect is mapped through the ratio the
+    // capture actually came back at rather than through dpr alone.
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    let crop = null;
+    if (paneRect) {
+      const kx = capW / Math.max(1, windowW);
+      const ky = capH / Math.max(1, windowH);
+      const cx = clamp(Math.round(paneRect.left * kx), 0, capW - 1);
+      const cy = clamp(Math.round(paneRect.top  * ky), 0, capH - 1);
+      crop = {
+        x: cx,
+        y: cy,
+        w: clamp(Math.round(paneRect.width  * kx), 1, capW - cx),
+        h: clamp(Math.round(paneRect.height * ky), 1, capH - cy)
+      };
+    }
+
+    // Recomputed against the region actually being kept — the pane's, when cropping —
+    // so the output is exactly MAX_IMG_WIDTH wide and pxPerCss matches what gets drawn.
+    const srcW = crop ? crop.w : capW;
+    const srcH = crop ? crop.h : capH;
+    outScale = Math.min(1, MAX_IMG_WIDTH / Math.max(1, srcW));
+    // Output pixels per CSS pixel of scroll, measured off the capture rather than
+    // assumed from dpr.
+    pxPerCss = Math.max(0.01, (srcH / Math.max(1, viewportH)) * outScale);
+    const outW = Math.max(1, Math.round(srcW * outScale));
 
     const lastTop  = slices[slices.length - 1].y;
     const contentH = Math.min(pageHeight, lastTop + viewportH);
@@ -350,9 +403,12 @@ async function captureFullPage(tab) {
         // into screens) it simply repaints that band with the same pixels. The extra pixel
         // of height absorbs the rounding between screens, so no hairline of background
         // shows at a seam — the next screen down paints over it.
+        // Source rect so a pane capture keeps only the pane; the whole frame otherwise.
         ctx.drawImage(
-          bmp, 0, Math.round((slices[i].y - g.top) * pxPerCss),
-          outW, Math.ceil(bmp.height * outScale) + 1
+          bmp,
+          crop ? crop.x : 0, crop ? crop.y : 0, crop ? crop.w : bmp.width, crop ? crop.h : bmp.height,
+          0, Math.round((slices[i].y - g.top) * pxPerCss),
+          outW, Math.ceil((crop ? crop.h : bmp.height) * outScale) + 1
         );
         bmp.close();
       }
@@ -360,7 +416,7 @@ async function captureFullPage(tab) {
       chunks.push({ dataUrl: await blobToDataUrl(blob), width: outW, height });
     }
 
-    return { chunks, slices: slices.length, fullPage: true, truncated: !reachedBottom };
+    return { chunks, slices: slices.length, fullPage: true, truncated: !reachedBottom, reason: stopReason };
   } catch (e) {
     console.error('STEPLY captureFullPage error:', e);
     return null;
@@ -1064,7 +1120,13 @@ async function handleMessage(message, sender, sendResponse) {
             screens:    shot.slices,
             // Carried through to the PDF's last page, so a page longer than one pass
             // can hold is never passed off as the whole thing.
-            truncated:  !!shot.truncated
+            truncated:  !!shot.truncated,
+            // False when the page could not be scrolled at all and only the visible
+            // area was captured. This was computed and then dropped here, which is how
+            // a one-screen capture reached the user looking like a complete page.
+            fullPage:   shot.fullPage !== false,
+            // Which branch ended the capture, so the footer can name the real cause.
+            reason:     shot.reason || ''
           }
         });
       } catch (e) {

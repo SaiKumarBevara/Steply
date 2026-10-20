@@ -6,6 +6,21 @@ let activeGuideId = null;
 let currentStepCount = 0;
 let hudElement = null;
 let isHudClosedSession = false;
+// Cancels a deferred append when the HUD is discarded before <body> existed.
+let hudPendingAppend = null;
+
+// The content script runs in every frame (`all_frames: true`). Recording genuinely needs
+// to run in subframes — clicks happen inside them, and getCSSSelector/elementData
+// translate their coordinates back to the top frame — but the HUD and the toast are
+// window-level chrome and belong to the top frame alone. Without this guard every iframe
+// carrying a content script painted its own pill, pinned to its own viewport, so any page
+// with a chat widget or a marketing iframe showed two or three "Recording…" HUDs, each at
+// its own frame's bottom-right. (A cross-origin frame also has its own sessionStorage, so
+// the duplicate ignored the position the real HUD had been dragged to.)
+const IS_TOP_FRAME = window === window.top;
+// Stable id so an orphaned pill can be swept even when this script holds no reference
+// to it — see createHUD().
+const HUD_ELEMENT_ID = 'steply-hud-element';
 let lastScrollY = window.scrollY;
 let lastScrollX = window.scrollX;
 // Everything the full-page capture changed on the page, so it can be put back exactly.
@@ -212,24 +227,36 @@ hudStyle.textContent = `
     opacity: 1 !important;
   }
 `;
-if (document.head) {
-  document.head.appendChild(hudStyle);
-} else {
-  document.documentElement.appendChild(hudStyle);
+// Every rule in here styles the HUD or the toast, neither of which a subframe renders,
+// so subframes no longer carry the stylesheet either.
+if (IS_TOP_FRAME) {
+  if (document.head) {
+    document.head.appendChild(hudStyle);
+  } else {
+    document.documentElement.appendChild(hudStyle);
+  }
 }
 
+// Returns a canceller. The observer used to outlive the element it was waiting for:
+// content scripts run at document_start, so <body> is routinely absent when the first
+// recording-status callback lands, and if recording stopped before <body> appeared then
+// updateHUD dropped its reference while the observer went on to append an orphan pill
+// that nothing held a handle to — and the next start built a second HUD above it.
 function safeAppendToBody(el) {
   if (document.body) {
     document.body.appendChild(el);
-  } else {
-    const observer = new MutationObserver((mutations, obs) => {
-      if (document.body) {
-        document.body.appendChild(el);
-        obs.disconnect();
-      }
-    });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    return () => {};
   }
+  let cancelled = false;
+  const observer = new MutationObserver((mutations, obs) => {
+    if (cancelled) { obs.disconnect(); return; }
+    if (document.body) {
+      obs.disconnect();
+      document.body.appendChild(el);
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  return () => { cancelled = true; observer.disconnect(); };
 }
 
 function syncRecordingState() {
@@ -262,6 +289,91 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 });
 
+// ─── Full-page capture: finding what actually scrolls ────────────────────────
+// Most pages scroll the document, but an app shell (Gmail-style layouts, Notion,
+// Confluence, most SPA dashboards) puts `overflow: auto` on an inner wrapper instead.
+// On those, window.scrollTo is a no-op and documentElement.scrollHeight is only the
+// viewport height — which is why the capture came back as a single screen and the page
+// visibly never moved. Consulted only when the document itself cannot scroll, so a page
+// that already captured correctly takes exactly the path it took before.
+function findPageScroller() {
+  const docEl = document.scrollingElement || document.documentElement;
+  if (docEl && docEl.scrollHeight > window.innerHeight + 4) return docEl;
+
+  let best = null;
+  let bestArea = 0;
+  const consider = (el) => {
+    if (el.scrollHeight <= el.clientHeight + 4) return;
+    const oy = getComputedStyle(el).overflowY;
+    if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') return;
+    const rect = el.getBoundingClientRect();
+    // Only a pane filling most of the window is plausibly "the page". Without this it
+    // would latch onto a scrollable sidebar, code block or open dropdown.
+    if (rect.height < window.innerHeight * 0.5) return;
+    if (rect.width  < window.innerWidth  * 0.5) return;
+    const area = rect.width * rect.height;
+    if (area > bestArea) { bestArea = area; best = el; }
+  };
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('*')) {
+      consider(el);
+      if (el.shadowRoot) walk(el.shadowRoot); // app shells are often web components
+    }
+  };
+  // Walked from documentElement rather than body so that body itself is considered —
+  // `html { overflow: hidden }` with a scrolling body is a real layout.
+  try { walk(document.documentElement); } catch (e) { /* best effort */ }
+  return best || docEl;
+}
+
+// `window.scrollTo` only drives the document scroller; a pane has to be moved by its
+// own scrollTop.
+function isDocumentScroller(el) {
+  return !el || el === (document.scrollingElement || document.documentElement);
+}
+
+function scrollPageTo(y) {
+  const s = fullPageState ? fullPageState.scroller : null;
+  if (isDocumentScroller(s)) window.scrollTo(0, y);
+  else s.scrollTop = y;
+}
+
+// Scroll offset, total travel and step size, from whichever element is scrolling.
+// `viewportH` is the scroll step — the pane's height, not the window's — and
+// `scrollerRect` tells the worker which part of each screenshot to keep, since
+// captureVisibleTab always hands back the whole window.
+function scrollerMetrics() {
+  const s = fullPageState ? fullPageState.scroller : null;
+  const base = { windowW: window.innerWidth, windowH: window.innerHeight };
+  if (isDocumentScroller(s)) {
+    return {
+      ...base,
+      y: window.scrollY,
+      pageHeight: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0),
+      viewportH: window.innerHeight,
+      viewportW: window.innerWidth,
+      scrollerRect: null
+    };
+  }
+  const rect = s.getBoundingClientRect();
+  const cs   = getComputedStyle(s);
+  // clientWidth/Height already exclude borders and the pane's own scrollbar, so the
+  // crop never picks up a scrollbar track or the chrome around the pane.
+  return {
+    ...base,
+    y: Math.round(s.scrollTop),
+    pageHeight: s.scrollHeight,
+    viewportH: s.clientHeight,
+    viewportW: s.clientWidth,
+    scrollerRect: {
+      left:   rect.left + (parseFloat(cs.borderLeftWidth) || 0),
+      top:    rect.top  + (parseFloat(cs.borderTopWidth)  || 0),
+      width:  s.clientWidth,
+      height: s.clientHeight
+    }
+  };
+}
+
 // Listen for messages from the background service worker
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // ── Full-page capture ───────────────────────────────────────────────────────
@@ -269,21 +381,43 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // there. This side owns scrolling the page and putting it back exactly as found.
   // These three handlers reply asynchronously, hence `return true`; the recording
   // branches below are untouched and still reply synchronously.
+  //
+  // The content script runs in every frame (`all_frames: true`), and
+  // chrome.tabs.sendMessage without a frameId delivers to all of them, resolving its
+  // callback with whichever frame answers first. An iframe answering was reporting its
+  // own tiny height as the page's — so the capture saw a page that already fitted on
+  // one screen, or a scrollY stuck at 0, and never scrolled. Hence `isTop`: every frame
+  // still hides its own pinned elements, but only the top frame measures, scrolls, and
+  // replies. Do not add a sendResponse call outside an `isTop` branch.
+  const isTop = IS_TOP_FRAME;
+
   if (request.action === 'fullPagePrepare') {
     try {
       const doc = document.documentElement;
+      const scroller = isTop ? findPageScroller() : null;
       fullPageState = {
+        scroller,
         scrollX: window.scrollX,
         scrollY: window.scrollY,
+        // A pane keeps its own offset, which window.scrollX/Y says nothing about.
+        scrollerTop: scroller && !isDocumentScroller(scroller) ? scroller.scrollTop : null,
         scrollBehavior: doc.style.getPropertyValue('scroll-behavior'),
         scrollBehaviorPriority: doc.style.getPropertyPriority('scroll-behavior'),
+        paneBehavior: null,
+        paneBehaviorPriority: '',
         sticky: [],
         fixed: []
       };
 
       // A smooth-scrolling page would still be gliding when the capture fires, which
-      // tears the slices. Force instant jumps for the duration.
+      // tears the slices. Force instant jumps for the duration — on the pane too, since
+      // that is where `scroll-behavior: smooth` sits when a pane is the scroller.
       doc.style.setProperty('scroll-behavior', 'auto', 'important');
+      if (scroller && !isDocumentScroller(scroller)) {
+        fullPageState.paneBehavior = scroller.style.getPropertyValue('scroll-behavior');
+        fullPageState.paneBehaviorPriority = scroller.style.getPropertyPriority('scroll-behavior');
+        scroller.style.setProperty('scroll-behavior', 'auto', 'important');
+      }
 
       // Pinned elements stay put while the page scrolls, so a nav bar or cookie banner
       // would be stamped into every slice. Handled by position type, because the two
@@ -314,17 +448,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
       }
 
-      sendResponse({
-        ok: true,
-        pageHeight: Math.max(doc.scrollHeight, document.body ? document.body.scrollHeight : 0),
-        viewportH: window.innerHeight,
-        viewportW: window.innerWidth,
-        dpr: window.devicePixelRatio || 1
-      });
+      if (isTop) {
+        sendResponse({
+          ok: true,
+          isTopFrame: true,
+          dpr: window.devicePixelRatio || 1,
+          // True when an inner pane is doing the scrolling, which the worker needs to
+          // know so it crops each screenshot down to that pane.
+          paneScroll: !isDocumentScroller(scroller),
+          ...scrollerMetrics()
+        });
+      }
     } catch (e) {
-      sendResponse({ ok: false, error: String(e) });
+      if (isTop) sendResponse({ ok: false, error: String(e) });
     }
-    return true;
+    return isTop;
   }
 
   if (request.action === 'fullPageScroll') {
@@ -337,23 +475,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         else s.el.style.removeProperty('visibility');
       }
 
-      window.scrollTo(0, request.y);
+      // Only the top frame scrolls. This used to run in every frame, which scrolled
+      // every embed to the host page's absolute offset and garbled them in the capture.
+      if (!isTop) return false;
+
+      scrollPageTo(request.y);
       // Two frames lets the browser paint the new position (and start any lazy images)
       // before the worker captures.
       requestAnimationFrame(() => requestAnimationFrame(() => {
         setTimeout(() => {
-          const doc = document.documentElement;
-          sendResponse({
-            y: window.scrollY,
-            // Re-measured every slice: lazy-loading pages grow as you scroll into them.
-            pageHeight: Math.max(doc.scrollHeight, document.body ? document.body.scrollHeight : 0)
-          });
+          // Re-measured every slice: lazy-loading pages grow as you scroll into them.
+          sendResponse(scrollerMetrics());
         }, 90);
       }));
     } catch (e) {
-      sendResponse({ y: window.scrollY, error: String(e) });
+      if (isTop) sendResponse({ y: window.scrollY, error: String(e) });
     }
-    return true;
+    return isTop;
   }
 
   if (request.action === 'fullPageRestore') {
@@ -369,15 +507,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else {
           doc.style.removeProperty('scroll-behavior');
         }
+        const pane = fullPageState.scroller;
+        if (pane && !isDocumentScroller(pane)) {
+          if (fullPageState.paneBehavior) {
+            pane.style.setProperty('scroll-behavior', fullPageState.paneBehavior, fullPageState.paneBehaviorPriority);
+          } else {
+            pane.style.removeProperty('scroll-behavior');
+          }
+          if (fullPageState.scrollerTop !== null) pane.scrollTop = fullPageState.scrollerTop;
+        }
         window.scrollTo(fullPageState.scrollX, fullPageState.scrollY);
         fullPageState = null;
       }
-      sendResponse({ ok: true });
+      if (isTop) sendResponse({ ok: true });
     } catch (e) {
       fullPageState = null;
-      sendResponse({ ok: false, error: String(e) });
+      if (isTop) sendResponse({ ok: false, error: String(e) });
     }
-    return true;
+    return isTop;
   }
 
   if (request.action === 'startRecording') {
@@ -422,6 +569,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 function updateHUD() {
+  // Top frame only. Subframes still track isRecording/isPaused — they need both to
+  // decide whether to record a click — they just paint nothing.
+  if (!IS_TOP_FRAME) return;
+
   if (isRecording && !isHudClosedSession) {
     if (!hudElement) {
       createHUD();
@@ -452,6 +603,8 @@ function updateHUD() {
       }
     }
   } else {
+    // Cancelled before the element is dropped, so a pending append can't resurrect it.
+    if (hudPendingAppend) { hudPendingAppend(); hudPendingAppend = null; }
     if (hudElement) {
       hudElement.remove();
       hudElement = null;
@@ -460,7 +613,14 @@ function updateHUD() {
 }
 
 function createHUD() {
+  // A stale pill can sit in the DOM with nothing referencing it — a content script left
+  // behind by an extension reload is the other way that happens. Sweeping by id first
+  // makes a duplicate HUD structurally impossible rather than merely unlikely.
+  document.querySelectorAll('#' + HUD_ELEMENT_ID).forEach((n) => n.remove());
+  if (hudPendingAppend) { hudPendingAppend(); hudPendingAppend = null; }
+
   hudElement = document.createElement('div');
+  hudElement.id = HUD_ELEMENT_ID;
   hudElement.className = 'steply-hud';
   hudElement.innerHTML = `
     <div class="steply-hud-drag-handle" title="Drag to reposition">
@@ -582,10 +742,11 @@ function createHUD() {
     document.addEventListener('mouseup', onDragEnd);
   });
 
-  safeAppendToBody(hudElement);
+  hudPendingAppend = safeAppendToBody(hudElement);
 }
 
 function showToast(messageText) {
+  if (!IS_TOP_FRAME) return; // window-level chrome, same as the HUD
   let toast = document.getElementById('steply-toast-element');
   if (!toast) {
     toast = document.createElement('div');
