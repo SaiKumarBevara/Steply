@@ -100,12 +100,13 @@ const PDF = {
 // Scales an image to fit a box without distorting it. Both exporters previously drew
 // every screenshot at a fixed 180x100mm, which stretched any capture that wasn't
 // exactly 1.8:1 — portrait windows and tall mobile captures came out visibly squashed.
-function fitPdfImage(doc, dataUrl, maxW, maxH) {
-  let ratio = 16 / 9; // only used if the properties can't be read
-  try {
-    const p = doc.getImageProperties(dataUrl);
-    if (p?.width > 0 && p?.height > 0) ratio = p.width / p.height;
-  } catch (e) { /* keep the fallback */ }
+//
+// Takes the aspect ratio rather than the image. Measuring it here with
+// doc.getImageProperties ran jsPDF's whole decoder — for a PNG, every scanline
+// unfiltered in JS — and unlike addImage that call caches nothing, so each step paid
+// for a full decode just to learn two numbers the canvas already knew.
+function fitPdfImage(ratio, maxW, maxH) {
+  if (!(ratio > 0) || !isFinite(ratio)) ratio = 16 / 9; // dimensions unknown
   let w = maxW, h = w / ratio;
   if (h > maxH) { h = maxH; w = h * ratio; }
   return { w, h };
@@ -162,22 +163,17 @@ function pdfSlots(contentTop) {
 // renders as an unreadable ~31mm strip (vs ~75mm with the whole page). So a figure that
 // tall takes the page to itself. Returns false when the dimensions can't be read, which
 // keeps the common two-per-page case as the default.
-function pdfStepWantsFullPage(doc, image, slotH) {
-  if (!image) return false;
-  try {
-    const p = doc.getImageProperties(image);
-    if (!(p?.width > 0 && p?.height > 0)) return false;
-    // Width the figure would get in a half slot, allowing ~16mm for the heading.
-    const halfW = Math.min(PDF.contentW, Math.max(0, slotH - 16) * (p.width / p.height));
-    return halfW < PDF.contentW * 0.62;
-  } catch (e) {
-    return false;
-  }
+function pdfStepWantsFullPage(image, slotH) {
+  if (!(image?.width > 0 && image?.height > 0)) return false;
+  // Width the figure would get in a half slot, allowing ~16mm for the heading.
+  const halfW = Math.min(PDF.contentW, Math.max(0, slotH - 16) * (image.width / image.height));
+  return halfW < PDF.contentW * 0.62;
 }
 
 // Draws one step into a slot: badge, heading, description, then the screenshot fitted
 // to whatever height is left. Both PDF exporters go through here, so they can't drift
 // apart the way they had (both carried the same hardcoded image-size bug).
+// `image` is what getAnnotatedImage returns: { dataUrl, width, height }, or null.
 function drawPdfStep(doc, { number, step, image, top, bottom }) {
   const textX = PDF.margin + 13;
   const textW = PDF.contentW - 13;
@@ -215,9 +211,13 @@ function drawPdfStep(doc, { number, step, image, top, bottom }) {
     y += 5;
     const avail = bottom - y;
     if (avail > 8) {
-      const { w, h } = fitPdfImage(doc, image, PDF.contentW, avail);
+      const { w, h } = fitPdfImage(image.width / image.height, PDF.contentW, avail);
       const x = PDF.margin + (PDF.contentW - w) / 2;
-      doc.addImage(image, 'JPEG', x, y, w, h);
+      // jsPDF ignores this format argument whenever it can sniff the data's magic
+      // bytes, and only falls back to it otherwise. It said 'JPEG' for years while a
+      // PNG went in, which is what hid the uncompressed-bitmap bloat — so it is only
+      // honest because the exporters now really do hand over JPEG.
+      doc.addImage(image.dataUrl, 'JPEG', x, y, w, h);
       // Thin frame so the screenshot reads as a figure rather than floating.
       doc.setDrawColor(...PDF.rule);
       doc.setLineWidth(0.3);
@@ -600,7 +600,17 @@ function drawAnnotations(ctx, canvas, annotations) {
   }
 }
 
-async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosition, timestampStyle) {
+// The rendered figure as { dataUrl, width, height }, or null. The PDF exporters call this
+// directly for JPEG; everything else goes through getAnnotatedDataUrl below and gets PNG.
+//
+// The format matters far more than it looks. The exporters used to receive PNG here,
+// and a canvas PNG is always RGBA — jsPDF splits that into an RGB stream plus an alpha
+// mask and, since no document turned compression on, wrote both raw: ~3.4 MB per
+// 1280x700 step, so a 15-step guide came out around 51 MB and long guides crashed the
+// tab. The alpha was all 255, since the canvas is painted from an opaque JPEG. JPEG goes
+// into the PDF as-is under DCTDecode, at roughly a fortieth of the size.
+async function getAnnotatedImage(step, colorKey, showTimestamp, timestampPosition, timestampStyle,
+                                 { mime = 'image/png', quality } = {}) {
   const screenshotResult = await resolveScreenshotUrl(step);
   if (!screenshotResult) return null;
   const { url: srcUrl, revoke } = screenshotResult;
@@ -610,6 +620,12 @@ async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosit
     const img    = new Image();
     img.onload = () => {
       canvas.width = img.width; canvas.height = img.height;
+      // JPEG has no alpha, so anything transparent would encode as black. Captures are
+      // opaque, but a legacy step's base64 screenshot can be a PNG.
+      if (mime === 'image/jpeg') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
       ctx.drawImage(img, 0, 0);
       drawHighlightBox(ctx, img, step, colorKey);
       // Manual markup sits above the automatic highlight box and below the
@@ -621,15 +637,27 @@ async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosit
         drawTimestampOnCanvas(canvas, ctx, step.timestamp, timestampPosition, timestampStyle);
       }
 
-      // Use PNG for clipboard support (JPEG is often rejected by browsers for ClipboardItem)
-      const dataUrl = canvas.toDataURL('image/png');
+      // PNG by default for clipboard support (JPEG is often rejected by browsers for
+      // ClipboardItem). `quality` is ignored for PNG.
+      const dataUrl = canvas.toDataURL(mime, quality);
       revoke();
-      resolve(dataUrl);
+      resolve({ dataUrl, width: canvas.width, height: canvas.height });
     };
     img.onerror = () => { revoke(); resolve(null); };
     img.src = srcUrl;
   });
 }
+
+// Kept for the clipboard and the Word, HTML, Markdown and JSON exporters, which all want
+// a plain PNG data URL. Unchanged for them.
+async function getAnnotatedDataUrl(step, colorKey, showTimestamp, timestampPosition, timestampStyle) {
+  const image = await getAnnotatedImage(step, colorKey, showTimestamp, timestampPosition, timestampStyle);
+  return image ? image.dataUrl : null;
+}
+
+// High enough that UI text in a screenshot stays crisp once printed; the gain past this
+// is invisible on paper and roughly doubles the file.
+const PDF_JPEG_QUALITY = 0.88;
 
 function ScreenshotCanvas({ step, highlightColor = 'red', showTimestamp = true, timestampPosition = 'bottom_right', timestampStyle = 'minimal_black' }) {
   const canvasRef = useRef(null);
@@ -2082,15 +2110,24 @@ export default function Dashboard() {
     setExportProgress({ current: 0, total: selectedGuide.steps.length, format: 'PDF' });
     
     try {
-      const doc = new jsPDF();
+      // `compress` is a safety net, not the fix: the fix is that screenshots now arrive
+      // as JPEG, which jsPDF embeds untouched whatever this says. It makes sure anything
+      // that does still arrive as PNG — the cover logo — is Flate-compressed instead of
+      // written raw.
+      const doc = new jsPDF({ compress: true });
       let isFirstPage = true;
 
       if (includeCoverPage) {
         isFirstPage = false;
-        // Top right Logo
+        // Top right Logo, fitted into its 50x25mm box and pinned to the right margin.
+        // It used to be drawn at exactly 50x25, stretching any logo that wasn't 2:1.
+        // Measured once with getImageProperties; that decodes the image, which is
+        // fine for one logo and is why the step figures no longer do it.
         if (coverLogo) {
           try {
-            doc.addImage(coverLogo, 'PNG', 142, 20, 50, 25);
+            const p = doc.getImageProperties(coverLogo);
+            const { w, h } = fitPdfImage(p?.height > 0 ? p.width / p.height : 0, 50, 25);
+            doc.addImage(coverLogo, 192 - w, 20, w, h);
           } catch (e) {
             console.error("PDF logo error:", e);
           }
@@ -2151,16 +2188,17 @@ export default function Dashboard() {
         let annotated = null;
         if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
           const stepColor = step.color || selectedGuide.defaultColor || 'red';
-          annotated = await getAnnotatedDataUrl(
+          annotated = await getAnnotatedImage(
             step,
             stepColor,
             showTimestamp,
             timestampPosition,
-            timestampStyle
+            timestampStyle,
+            { mime: 'image/jpeg', quality: PDF_JPEG_QUALITY }
           );
         }
 
-        const wantsFull = pdfStepWantsFullPage(doc, annotated, slotH);
+        const wantsFull = pdfStepWantsFullPage(annotated, slotH);
         if (cursor > 1 || (wantsFull && cursor !== 0)) {
           if (isFirstPage) isFirstPage = false; else doc.addPage();
           cursor = 0;
@@ -2758,7 +2796,7 @@ export default function Dashboard() {
         downloadFile(new Blob([md], { type: 'text/markdown' }), `${sanitizeFilename(bulkTitle)}.md`);
       }
       else if (format === 'pdf') {
-        const doc = new jsPDF();
+        const doc = new jsPDF({ compress: true }); // see exportPDF for why
         // Slots start below the running header rule at y=16; drawPdfStep and pdfSlots
         // own everything below that, including clearing the footer rule.
         const CONTENT_TOP = 26;
@@ -2795,17 +2833,18 @@ export default function Dashboard() {
             let annotated = null;
             if (step.stepType !== 'note' && (step.screenshot || step.screenshotId)) {
               const stepColor = step.color || g.defaultColor || 'red';
-              annotated = await getAnnotatedDataUrl(
+              annotated = await getAnnotatedImage(
                 step,
                 stepColor,
                 g.showTimestamp !== false,
                 g.timestampPosition || 'bottom_right',
-                g.timestampStyle || 'minimal_black'
+                g.timestampStyle || 'minimal_black',
+                { mime: 'image/jpeg', quality: PDF_JPEG_QUALITY }
               );
             }
 
             const slotH = half[0].bottom - half[0].top;
-            const wantsFull = pdfStepWantsFullPage(doc, annotated, slotH);
+            const wantsFull = pdfStepWantsFullPage(annotated, slotH);
             if (cursor > 1 || (wantsFull && cursor !== 0)) {
               doc.addPage();
               contentTop = CONTENT_TOP;

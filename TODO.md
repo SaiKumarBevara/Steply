@@ -4,84 +4,18 @@ Outstanding defects found while investigating the "save as PDF" reports, ordered
 severity. Each entry records the root cause rather than just the symptom, because in
 every case the symptom and the cause are in different files.
 
-Two causes were already fixed and are **not** listed here: the full-page capture being
-answered by an iframe instead of the top frame, and the duplicate recording HUD. Both
-came from the same gap — the content script runs with `all_frames: true` and had no
-top-frame discipline.
+Already fixed, and so **not** listed here:
 
----
-
-## P0 — Dashboard "Export as PDF" embeds raw uncompressed bitmaps
-
-**Symptom:** exporting a guide produces an enormous file, freezes the dashboard tab for
-a long time, and on larger guides crashes it outright. No error is shown.
-
-**Measured cost:** a stored screenshot is a ~80 KB JPEG at 1280x700. What reaches the
-PDF is 2.56 MiB of RGB plus a 0.85 MiB alpha SMask — **~3.4 MB per step, uncompressed**.
-A 15-step guide is ~51 MB; a 40-step guide is ~137 MB. `doc.save()` builds the whole
-document as one JS string before blobbing it, so peak memory is 3-4x the file size.
-
-**Root cause** — four links, each individually invisible:
-
-1. `getAnnotatedDataUrl` returns PNG (`src/Dashboard.jsx:625`). Correct for the
-   clipboard, which rejects JPEG in a `ClipboardItem` — but the PDF exporters reuse the
-   same function.
-2. `doc.addImage(image, 'JPEG', ...)` (`src/Dashboard.jsx:220`). **The `'JPEG'`
-   argument does nothing.** jsPDF sniffs magic bytes and uses the argument only as a
-   fallback (`jspdf.es.js:10336`), so it correctly detects PNG and ignores it. The code
-   reads as though it writes JPEG. It does not. This is the trap that hid the bug.
-3. `new jsPDF()` with no `compress: true` (`src/Dashboard.jsx:2085` and `:2761`), so
-   `getFilters()` returns `[]`, `addImage` never sets a compression level
-   (`jspdf.es.js:10300`), and `checkCompressValue(undefined)` falls through to `"NONE"`
-   (`jspdf.es.js:9837`).
-4. `canvas.toDataURL('image/png')` always emits colorType 6 (RGBA), which takes
-   `processPNG`'s alpha-split branch (`jspdf.es.js:17044`). With compression `"NONE"`,
-   `canCompress` is false and it writes raw bytes with no `FlateDecode`
-   (`jspdf.es.js:17104`).
-
-The alpha channel is pure waste on top of that: the canvas is painted from an opaque
-JPEG, so every one of those 896,000 alpha bytes per step is `255`.
-
-**Fix:**
-
-- Split `getAnnotatedDataUrl` into a core that takes `mime`/`quality` and returns
-  `{ dataUrl, width, height }`, plus a thin wrapper keeping today's string return.
-  Only the two PDF call sites use the core — the other 9 callers stay untouched, which
-  keeps the blast radius small.
-- Pass `'image/jpeg'` from both PDF exporters (`src/Dashboard.jsx:2154` and `:2798`).
-  Leave the clipboard call at `:1416` on PNG.
-- Add `compress: true` to both `new jsPDF()` calls as a safety net, so a PNG that ever
-  reaches `addImage` again gets `FlateDecode` instead of raw bytes. Verified safe for
-  JPEG: `processJPEG` ignores the compression argument and passes data straight through
-  with `DCTDecode` (`jspdf.es.js:16141-16152`), so there is no double encoding.
-- Then make `addImage`'s declared format honest, and leave a comment that jsPDF sniffs
-  the type regardless.
-
-**Verify:** export a 15-step guide. Expect roughly 1.5 MB, not ~51 MB.
-
-**Effort:** ~1 hour. **Expected improvement:** ~40x smaller files.
-
----
-
-## P1 — Each screenshot is PNG-decoded three times per step
-
-**Root cause:** `doc.getImageProperties()` runs the full `processPNG` pipeline
-(`jspdf.es.js:10437`) and has **no alias cache** — only `addImage` caches. Per step:
-
-- `pdfStepWantsFullPage` -> `getImageProperties` (`src/Dashboard.jsx:2163`)
-- `fitPdfImage` -> `getImageProperties` (`src/Dashboard.jsx:218`)
-- `addImage` -> `processPNG` (`src/Dashboard.jsx:220`)
-
-Each decode unfilters every scanline in pure JS and allocates ~5 bytes/pixel of scratch
-that is thrown away immediately.
-
-**Fix:** the width and height are already known on the canvas. Take them from the P0
-change's `{ dataUrl, width, height }`, thread them into `fitPdfImage` and
-`pdfStepWantsFullPage` as plain numbers, and **delete both `getImageProperties` calls**
-(`src/Dashboard.jsx:107` and `:168`). Keep the existing 16:9 fallback for the legacy
-`step.screenshot` path, where dimensions are genuinely unknown.
-
-Best done in the same pass as P0 — they touch the same functions.
+- The full-page capture being answered by an iframe instead of the top frame, and the
+  duplicate recording HUD. Both came from the same gap: the content script runs with
+  `all_frames: true` and had no top-frame discipline. Both were confirmed fixed in a
+  browser on vertiv.com.
+- Dashboard "Export as PDF" embedding every screenshot as a raw uncompressed RGBA bitmap,
+  the triple image decode per step, and the stretched cover logo. Measured with the
+  project's jsPDF on a 15-step guide: 51.28 MB before, 3.45 MB after (14.9x). Lossless
+  PNG with Flate was tried as the alternative and rejected: on pixels decoded from the
+  stored JPEGs it came out 1.75x larger and took 6 s of main-thread compression against
+  30 ms. Don't reopen that without re-measuring.
 
 ---
 
@@ -101,18 +35,6 @@ in `fullPageRestore`.
 react-window) unmount content as you scroll and cannot be captured by scroll-and-stitch
 at all. Detect a shrinking `scrollHeight` across slices and warn in the PDF footer
 rather than shipping a quietly garbled document.
-
----
-
-## P2 — Cover logo is the one image that bypasses the aspect-ratio fix
-
-**Root cause:** `doc.addImage(coverLogo, 'PNG', 142, 20, 50, 25)`
-(`src/Dashboard.jsx:2093`) forces a hard 50x25 mm box. Commit b96be43 fixed exactly this
-squashing for step screenshots via `fitPdfImage` but missed the logo, so any logo that
-is not 2:1 is stretched.
-
-**Fix:** route it through `fitPdfImage` with a 50x25 mm bounding box and drop the
-`'PNG'` literal, which is a fallback jsPDF ignores anyway.
 
 ---
 
