@@ -146,8 +146,8 @@ async function buildPdf(meta) {
   // down it, and the original JPEG goes in untouched.
   if (total === 1) {
     doc.addImage(chunks[0].dataUrl, 'JPEG', 0, 0, PAGE_W, chunks[0].height * plan[0].mmPerPx);
-    stampFooter(doc, meta, 1, 1);
-    return { doc, pages: 1 };
+    chunks[0].dataUrl = null; // jsPDF holds its own copy now
+    return { doc, pages: stampFooters(doc, meta) };
   }
 
   // Cut into full-width horizontal bands, one per sheet. The cut lands wherever it
@@ -173,20 +173,67 @@ async function buildPdf(meta) {
       if (page > 0) doc.addPage();
       doc.addImage(canvas.toDataURL('image/jpeg', BAND_QUALITY), 'JPEG', 0, 0, PAGE_W, h * part.mmPerPx);
       page += 1;
-      stampFooter(doc, meta, page, total);
 
       // Yields so the page count on screen actually repaints; a tall capture is a few
-      // dozen sheets and several seconds of encoding.
+      // dozen sheets and several seconds of encoding. `total` is the plan, which is
+      // fine for progress; the footers use the real count.
       setStatus(`Building your PDF… page ${page} of ${total}`);
       await new Promise((r) => setTimeout(r, 0));
     }
 
     // Drop this chunk's decoded pixels before the next one is loaded. A long capture is
-    // several chunks and each is tens of megabytes once decoded.
+    // several chunks and each is tens of megabytes once decoded. The base64 string goes
+    // too: it was otherwise held to the end of the build, every chunk at once, though
+    // nothing reads it again once its bands are in the document.
     img.src = '';
+    part.chunk.dataUrl = null;
   }
 
-  return { doc, pages: page };
+  // Releases the band canvas's backing store now, rather than whenever it's collected.
+  canvas.width = canvas.height = 0;
+
+  return { doc, pages: stampFooters(doc, meta) };
+}
+
+// Footers go on in a second pass, once the document is complete. They used to be
+// stamped as each page was drawn, against the page count planned up front — and when
+// the build produced fewer pages than planned, every footer read "n / total" with a
+// total that was never reached, and the truncation note, keyed to the last page, was
+// never printed at all. Returns the real page count.
+function stampFooters(doc, meta) {
+  const total = doc.getNumberOfPages();
+  for (let p = 1; p <= total; p++) {
+    doc.setPage(p);
+    stampFooter(doc, meta, p, total);
+  }
+  return total;
+}
+
+// A small copy of the top of the capture for the on-screen preview. Pointing the <img>
+// at the first chunk itself kept that whole chunk decoded for the life of the tab — at
+// 1280x15000 that is ~77 MB of pixels to show a 230px-tall strip, because CSS sizing
+// doesn't shrink what gets decoded. Never rejects: a missing preview is cosmetic.
+const PREVIEW_W     = 960;  // 2x the card's width, so it stays sharp on high-DPI screens
+const PREVIEW_MAX_H = 600;  // the card shows ~230 CSS px of it; anything more is waste
+async function makePreview(chunk) {
+  let img;
+  try {
+    img = await loadImage(chunk.dataUrl);
+    const scale  = Math.min(1, PREVIEW_W / img.naturalWidth);
+    const outW   = Math.max(1, Math.round(img.naturalWidth * scale));
+    const outH   = Math.max(1, Math.min(PREVIEW_MAX_H, Math.round(img.naturalHeight * scale)));
+    const canvas = document.createElement('canvas');
+    canvas.width  = outW;
+    canvas.height = outH;
+    canvas.getContext('2d').drawImage(img, 0, 0, img.naturalWidth, outH / scale, 0, 0, outW, outH);
+    const url = canvas.toDataURL('image/jpeg', 0.85);
+    canvas.width = canvas.height = 0;
+    return url;
+  } catch (e) {
+    return null;
+  } finally {
+    if (img) img.src = '';
+  }
 }
 
 async function main() {
@@ -209,8 +256,13 @@ async function main() {
   chrome.storage.local.remove('steplyPendingCapture');
 
   el('meta').textContent = meta.pageUrl || '';
-  el('preview').src = meta.chunks[0].dataUrl;
-  el('previewWrap').style.display = 'block';
+  // Awaited before the build so the preview is up while the pages are encoding, and so
+  // its own decode is released before the build starts decoding chunks.
+  const preview = await makePreview(meta.chunks[0]);
+  if (preview) {
+    el('preview').src = preview;
+    el('previewWrap').style.display = 'block';
+  }
 
   try {
     const { doc, pages } = await buildPdf(meta);

@@ -1,8 +1,8 @@
 # Open fixes
 
-Outstanding defects found while investigating the "save as PDF" reports, ordered by
-severity. Each entry records the root cause rather than just the symptom, because in
-every case the symptom and the cause are in different files.
+Outstanding defects found while investigating the "save as PDF" reports. Each entry
+records the root cause rather than just the symptom, because in every case the symptom
+and the cause are in different files.
 
 Already fixed, and so **not** listed here:
 
@@ -16,69 +16,47 @@ Already fixed, and so **not** listed here:
   PNG with Flate was tried as the alternative and rejected: on pixels decoded from the
   stored JPEGs it came out 1.75x larger and took 6 s of main-thread compression against
   30 ms. Don't reopen that without re-measuring.
+- Lazy-loaded images capturing blank, pinned bars inside web components repeating on
+  every slice, and the builder tab's retained preview and chunk strings. Footers are now
+  stamped in a second pass too, though that one was hardening rather than a live bug: a
+  brute force over every chunk shape up to 1280x15000 found no case where the planned
+  page count overshoots, so the `h <= 0` branch it guarded against is unreachable.
+
+`tools/capture-test-server.js` serves a page for each of these capture cases, with the
+expected result printed at the top. Run it before touching the capture path.
 
 ---
 
-## P2 — Lazy-loaded images capture blank
+## P2 — Virtualised lists capture garbled
 
-**Root cause:** `fullPageScroll` settles for two `requestAnimationFrame`s plus 90 ms
-before replying (`src/content.js:489`). IntersectionObserver lazy loading needs a
-network round trip, typically 300 ms to 2 s, so images below the first fold come out as
-placeholders.
+**Root cause:** feeds and long lists built on windowing (Twitter/X, Gmail, anything on
+react-window or react-virtualized) unmount rows as they scroll out of view and mount new
+ones in their place. Scroll-and-stitch assumes the page is static while it scrolls, so
+on these pages the capture repeats, skips or overlaps rows. No change to the slicing
+can fix that; the content is not there to capture.
 
-**Fix:** raise the settle to ~250 ms, and before replying poll in-viewport `<img>`
-elements for `complete && naturalWidth > 0` against a ~1.2 s budget. In
-`fullPagePrepare`, flip in-viewport `loading="lazy"` images to `eager` and restore them
-in `fullPageRestore`.
+**Fix:** detect it and say so rather than ship a quietly wrong document. A strong
+signal is `scrollHeight` shrinking, or the same list items reappearing, between slices.
+Carry a `virtualised` flag to the builder and print it in the last page's footer, the
+same way `truncated` is handled.
 
-**Out of scope, needs its own decision:** virtualised lists (Twitter, Gmail,
-react-window) unmount content as you scroll and cannot be captured by scroll-and-stitch
-at all. Detect a shrinking `scrollHeight` across slices and warn in the PDF footer
-rather than shipping a quietly garbled document.
-
----
-
-## P3 — Fixed/sticky scan misses shadow DOM and `<html>`-level elements
-
-**Root cause:** `document.body.querySelectorAll('*')` (`src/content.js:431`) does not
-descend into `shadowRoot`, and skips anything parented directly to `documentElement`.
-Cookie banners and sticky navs built as web components are stamped into **every slice**
-of the capture.
-
-**Fix:** reuse the recursive walker already written for `findPageScroller` in the same
-file — it descends into open shadow roots and starts from `documentElement`. Closed
-shadow roots are unreachable; worth a comment saying so.
+**Needs a decision first:** whether a detected virtualised page should still produce a
+PDF with a warning, or refuse and explain.
 
 ---
 
-## P3 — Builder tab holds far more memory than it needs
+## P3 — Each slice now takes ~100 ms longer, even on a page with no images
 
-**Root causes, all in `src/capture.js`:**
+**Cause:** `waitForVisibleImages` (`src/content.js`) holds every slice for at least
+`LAZY_SETTLE_MIN_MS` plus a frame, so a script loader has time to swap its real `src`
+in. On a page with nothing to load that is pure overhead: measured at ~240 ms per slice
+against ~145 ms before. Each slice already spends 600 ms in the capture throttle, so a
+long page captures roughly 10% slower.
 
-- `el('preview').src = meta.chunks[0].dataUrl` (`:212`) points an `<img>` at the full
-  first chunk. A 1280x15000 data URL decodes to a **~77 MB retained bitmap**; CSS
-  sizing does not reduce decode cost.
-- Nothing releases `meta.chunks[i].dataUrl` as chunks are consumed, so every stitched
-  JPEG stays live beside the band canvases and jsPDF's own copies.
-- `doc` is deliberately retained for the "Download again" button (`:230`), holding the
-  entire PDF for the tab's lifetime.
-
-**Fix:** build the preview from a downscaled canvas capped at ~400 px tall, and null out
-each chunk's `dataUrl` once its bands are drawn. The retained `doc` is a deliberate
-trade-off for the re-download button — leave it, but note it.
-
----
-
-## P3 — Footer page numbers can reference a page that is never reached
-
-**Root cause:** `if (h <= 0) break;` (`src/capture.js:167`) can make the actual page
-count lower than the planned `total`. Footers then read "n / total" with a `total` that
-is never reached, and the truncation note keyed on `page === total`
-(`src/capture.js:90`, `stampFooter`) never prints at all.
-
-**Fix:** stamp footers in a second pass over `doc.getNumberOfPages()` after layout.
-`stampPdfFurniture` in `src/Dashboard.jsx:244` already does exactly this and can be
-copied.
+**Possible fix:** skip the minimum on slices with no images in view at all, and drop
+the final frame when nothing was waited for. Not done yet because the saving is small
+and the minimum is what catches script loaders; measure on a real page before changing
+it.
 
 ---
 
@@ -88,3 +66,6 @@ copied.
   during this investigation — if a fix appears not to work, check the build before
   checking the code, and remember that an already-open tab keeps its old content script
   until the page is reloaded.
+- `doc` is deliberately kept alive in `src/capture.js` for the "Download again" button,
+  holding the whole PDF for the life of the builder tab. That is a trade-off, not an
+  oversight.

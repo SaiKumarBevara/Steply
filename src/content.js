@@ -296,6 +296,24 @@ chrome.storage.onChanged.addListener((changes) => {
 // viewport height — which is why the capture came back as a single screen and the page
 // visibly never moved. Consulted only when the document itself cannot scroll, so a page
 // that already captured correctly takes exactly the path it took before.
+// Every element in the document, including inside open shadow roots, which
+// querySelectorAll('*') does not enter. Closed shadow roots can't be reached from a
+// content script at all; their contents are simply missed. Starts at documentElement
+// rather than body, so <body> itself and anything parented straight to <html> are
+// included.
+function forEachElementDeep(fn, root = document.documentElement) {
+  const walk = (node) => {
+    for (const el of node.querySelectorAll('*')) {
+      fn(el);
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  try {
+    if (root === document.documentElement) fn(root);
+    walk(root);
+  } catch (e) { /* best effort: a partial walk beats none */ }
+}
+
 function findPageScroller() {
   const docEl = document.scrollingElement || document.documentElement;
   if (docEl && docEl.scrollHeight > window.innerHeight + 4) return docEl;
@@ -314,16 +332,88 @@ function findPageScroller() {
     const area = rect.width * rect.height;
     if (area > bestArea) { bestArea = area; best = el; }
   };
-  const walk = (root) => {
-    for (const el of root.querySelectorAll('*')) {
-      consider(el);
-      if (el.shadowRoot) walk(el.shadowRoot); // app shells are often web components
-    }
-  };
-  // Walked from documentElement rather than body so that body itself is considered —
-  // `html { overflow: hidden }` with a scrolling body is a real layout.
-  try { walk(document.documentElement); } catch (e) { /* best effort */ }
+  // Deep, because app shells are often web components; and from documentElement so that
+  // body itself is considered — `html { overflow: hidden }` with a scrolling body is a
+  // real layout.
+  forEachElementDeep((el) => {
+    if (el !== docEl && el !== document.documentElement) consider(el);
+  });
   return best || docEl;
+}
+
+// ─── Full-page capture: waiting for lazy images ──────────────────────────────
+// A slice used to be captured a fixed 90ms after scrolling. Lazy loading needs a
+// network round trip — usually 300ms to 2s — so images below the first screen came out
+// as blank placeholders. Each slice now waits for the images on screen to finish, up to
+// a budget. That covers both kinds: native `loading="lazy"` (Chrome starts those a
+// screen or two ahead, so they're often done already) and script loaders that swap
+// data-src into src from an IntersectionObserver, which only scrolling can trigger.
+//
+// Lazy images are deliberately *not* switched to eager up front. On a page with
+// hundreds of them that starts every download at once, and the images actually on
+// screen then load slower, not faster.
+//
+// CSS background-images can't be observed from here and aren't waited for.
+const LAZY_SETTLE_MIN_MS = 120;  // a loader's observer fires a frame or two after scroll
+const LAZY_SETTLE_MAX_MS = 1500; // per slice; a stalled image must not stall the capture
+const LAZY_POLL_MS       = 50;
+
+// Images inside open shadow roots, which document.images doesn't list. Gathered once at
+// prepare, since walking the whole tree on every slice would be wasteful.
+function allImages() {
+  const shadow = fullPageState ? fullPageState.shadowImages : [];
+  return shadow.length ? [...document.images, ...shadow] : document.images;
+}
+
+// The images in the capture area that are still loading. `complete` is also true for
+// a broken image, which is right: there is nothing more to wait for. Both axes are
+// checked — a carousel's off-screen slides sit beside the viewport, never load, and
+// would otherwise hold every slice to the full budget.
+function pendingVisibleImages() {
+  const s = fullPageState ? fullPageState.scroller : null;
+  let top = 0, bottom = window.innerHeight, left = 0, right = window.innerWidth;
+  if (!isDocumentScroller(s)) {
+    const r = s.getBoundingClientRect();
+    top    = Math.max(top, r.top);
+    bottom = Math.min(bottom, r.bottom);
+    left   = Math.max(left, r.left);
+    right  = Math.min(right, r.right);
+  }
+  const given = fullPageState ? fullPageState.gaveUpOn : null;
+  const pending = [];
+  for (const img of allImages()) {
+    if (img.complete || (given && given.has(img))) continue;
+    const r = img.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue; // display:none or not laid out
+    if (r.bottom > top && r.top < bottom && r.right > left && r.left < right) pending.push(img);
+  }
+  return pending;
+}
+
+// Resolves once the visible images have loaded or the budget runs out, whichever is
+// first. Never rejects. The minimum gives a script loader time to notice the scroll and
+// swap the real src in; before that, the placeholder it shows is already `complete`.
+//
+// An image still loading when the budget runs out is not waited for again. One that
+// never finishes — a stalled request, a slide clipped by its carousel so its lazy load
+// never fires — would otherwise cost the full budget on every slice it's in.
+function waitForVisibleImages() {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      const elapsed = Date.now() - start;
+      if (elapsed >= LAZY_SETTLE_MAX_MS) {
+        if (fullPageState) for (const img of pendingVisibleImages()) fullPageState.gaveUpOn.add(img);
+        return resolve();
+      }
+      if (elapsed >= LAZY_SETTLE_MIN_MS && pendingVisibleImages().length === 0) {
+        // One more frame, so the image that just finished is painted, not just decoded.
+        return requestAnimationFrame(() => resolve());
+      }
+      setTimeout(check, LAZY_POLL_MS);
+    };
+    check();
+  });
 }
 
 // `window.scrollTo` only drives the document scroller; a pane has to be moved by its
@@ -406,7 +496,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         paneBehavior: null,
         paneBehaviorPriority: '',
         sticky: [],
-        fixed: []
+        fixed: [],
+        // Images in shadow roots, and images already waited a full budget for; see
+        // waitForVisibleImages. Top frame only — subframes don't scroll or wait.
+        shadowImages: [],
+        gaveUpOn: new WeakSet()
       };
 
       // A smooth-scrolling page would still be gliding when the capture fires, which
@@ -428,8 +522,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       //             hiding cannot reflow the page. Forcing them static *would* reflow,
       //             which is why they are hidden rather than repositioned. The first
       //             slice keeps them so the top of the capture looks like the real page.
-      const all = document.body ? document.body.querySelectorAll('*') : [];
-      for (const el of all) {
+      //
+      // Walked deep: this used to be body.querySelectorAll('*'), which doesn't enter
+      // shadow roots, so a cookie banner or sticky nav built as a web component was
+      // stamped into every slice. <html> and <body> are skipped — hiding either would
+      // blank the whole capture, and neither is a bar.
+      const pinnedCandidates = [];
+      forEachElementDeep((el) => {
+        if (el === document.documentElement || el === document.body) return;
+        if (isTop && el.tagName === 'IMG' && el.getRootNode() !== document) {
+          fullPageState.shadowImages.push(el);
+        }
+        pinnedCandidates.push(el);
+      });
+
+      for (const el of pinnedCandidates) {
         const pos = getComputedStyle(el).position;
         if (pos !== 'fixed' && pos !== 'sticky') continue;
         const saved = {
@@ -480,13 +587,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (!isTop) return false;
 
       scrollPageTo(request.y);
-      // Two frames lets the browser paint the new position (and start any lazy images)
-      // before the worker captures.
+      // Two frames lets the browser paint the new position, then the images now on
+      // screen get time to load. Bounded well inside the worker's 5s message timeout.
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        setTimeout(() => {
+        waitForVisibleImages().then(() => {
           // Re-measured every slice: lazy-loading pages grow as you scroll into them.
-          sendResponse(scrollerMetrics());
-        }, 90);
+          try { sendResponse(scrollerMetrics()); }
+          catch (e) { sendResponse({ y: window.scrollY, error: String(e) }); }
+        });
       }));
     } catch (e) {
       if (isTop) sendResponse({ y: window.scrollY, error: String(e) });
@@ -501,8 +609,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         for (const s of [...fullPageState.sticky, ...fullPageState.fixed]) {
           if (s.prev) s.el.style.setProperty(s.prop, s.prev, s.priority);
           else s.el.style.removeProperty(s.prop);
-        }
-        if (fullPageState.scrollBehavior) {
+        }        if (fullPageState.scrollBehavior) {
           doc.style.setProperty('scroll-behavior', fullPageState.scrollBehavior, fullPageState.scrollBehaviorPriority);
         } else {
           doc.style.removeProperty('scroll-behavior');
