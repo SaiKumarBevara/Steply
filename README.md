@@ -140,7 +140,7 @@ Open a guide in the Dashboard, then use the export dropdown in the top-right:
 
 | Format | File | Contents |
 |---|---|---|
-| **PDF** | `.pdf` file | All steps with annotated screenshots, two per page |
+| **PDF** | `.pdf` file | All steps with annotated screenshots, two per page. Screenshots are embedded as JPEG, so a 15-step guide is a few MB |
 | **Word** | `.docx` file | All steps with embedded annotated images |
 | **Markdown** | `.md` file | All steps with inline base64 screenshots |
 | **HTML** | `.html` file | Self-contained page with embedded screenshots |
@@ -163,15 +163,19 @@ Separate from recording: this takes the page you are looking at and saves **the 
 
 ### What it does for you
 - **Captures past the fold.** The page is scrolled and the screens are stitched together, so you get the full document, not a screenshot.
-- **Strips pinned elements.** Sticky headers are dropped into normal flow and fixed elements (nav bars, cookie banners, chat widgets) are hidden after the first screen, so they don't repeat down every page of the PDF. The page is restored exactly as it was afterwards.
+- **Finds what actually scrolls.** Many web apps (dashboards, docs tools, mail clients) scroll an inner panel rather than the page itself. Steply finds that panel, scrolls it, and crops each screen to it.
+- **Waits for images to load.** After each scroll, Steply waits — up to 1.5 seconds — for the images now on screen to finish loading, so lazy-loaded pictures come through instead of blank boxes.
+- **Strips pinned elements.** Sticky headers are dropped into normal flow and fixed elements (nav bars, cookie banners, chat widgets) are hidden after the first screen, so they don't repeat down every page of the PDF. This includes ones built as web components. The page is restored exactly as it was afterwards.
 - **Splits tall captures automatically.** Chrome refuses to allocate a canvas taller than roughly 16,384px, so very long pages are stitched in several chunks. The chunk boundaries fall on screen boundaries and run end to end in the PDF, so nothing is lost or duplicated between them.
 - **Footers every page** with the source URL and a `page / total` counter.
 
 ### Important notes
 - **Nothing is saved as a guide.** This writes nothing to IndexedDB and does not appear in your guide list. The PDF file is the only output.
 - **Safe during recording.** Using it mid-recording does not add a step or disturb the guide being recorded. The recording HUD is hidden so it isn't baked into the capture.
-- **It takes time.** Chrome rate-limits screen capture to about two per second, so a long page genuinely takes 30–90 seconds.
-- **Limits.** Capture stops at 150 screens or 120,000 output pixels, whichever comes first — comfortably past the longest real documents, but an infinite-scroll feed will stop there. When that happens the PDF says so in the footer of its last page rather than passing a partial capture off as complete.
+- **It takes time.** Chrome rate-limits screen capture to about two per second, and each screen also waits for its images, so a long page genuinely takes 30–90 seconds.
+- **Limits.** Capture stops at 150 screens or 120,000 output pixels, whichever comes first — comfortably past the longest real documents, but an infinite-scroll feed will stop there.
+- **It tells you when it stopped short.** If the capture didn't reach the bottom of the page, for whatever reason, the footer of the PDF's last page says why — so a partial capture is never passed off as complete. See [Troubleshooting](#the-pdfs-last-page-says-the-capture-stopped-early).
+- **Infinite-scroll feeds don't capture cleanly.** Sites like X/Twitter or Gmail swap posts in and out as you scroll, so the PDF can repeat or skip some. Scroll-and-stitch can't fix that.
 - **Blocked pages.** Chrome does not allow capture on `chrome://` pages, the Web Store, or the built-in PDF viewer. You'll get a clear message instead of a hung button.
 
 ---
@@ -297,7 +301,7 @@ You can open the Steply popup at any time using your keyboard:
 ### 📤 Exports
 | Format | Details |
 |---|---|
-| **PDF** | All steps with text + annotated screenshots via `jsPDF`, two per page; a figure too tall for a half-page slot is given a page of its own |
+| **PDF** | All steps with text + annotated screenshots via `jsPDF`, two per page; a figure too tall for a half-page slot is given a page of its own. Screenshots go in as JPEG (q0.88), which jsPDF embeds untouched — the clipboard and the other formats still get PNG |
 | **Word (.docx)** | All steps with embedded annotated images via `docx` library |
 | **Markdown (.md)** | Steps with inline base64-embedded annotated screenshots |
 | **HTML (.html)** | Self-contained single file with embedded screenshots |
@@ -309,10 +313,13 @@ You can open the Steply popup at any time using your keyboard:
 |---|---|
 | **Scroll and stitch** | The content script scrolls the page; the service worker calls `captureVisibleTab` per screen and stitches the results. Throttled to 600ms because Chrome caps capture at ~2 calls/second |
 | **Chunked stitching** | Chrome refuses canvases taller than ~16384px, so the stitch is cut into chunks of 15,000px. Boundaries land on screen boundaries and chunks run end to end in the PDF, so nothing is lost at a seam |
-| **Pinned element handling** | `sticky` → `static` (already in flow, so no reflow); `fixed` → hidden after the first screen (out of flow, so hiding cannot reflow). All original inline styles restored afterwards |
-| **Memory discipline** | Screens are held as `Blob`s, not base64 strings, during capture — 150 base64 screenshots as JS strings would be hundreds of megabytes |
-| **Lazy-load aware** | Page height is re-measured on every screen, so pages that grow as you scroll into them are followed |
-| **Capture limits** | 150 screens / 120,000 output pixels. On hitting either, the PDF's last page carries a note saying the capture stopped early |
+| **Top frame only** | The content script runs in every frame, so only the top frame measures, scrolls and replies to the capture messages, and only it draws the recording HUD. An iframe answering first used to report its own height as the page's |
+| **Inner scroll panes** | When the document itself can't scroll, the largest pane covering at least half the window with `overflow: auto/scroll` is driven instead, and each screen is cropped to its client box |
+| **Pinned element handling** | `sticky` → `static` (already in flow, so no reflow); `fixed` → hidden after the first screen (out of flow, so hiding cannot reflow). The scan walks into open shadow roots, so web-component banners are caught too; closed shadow roots can't be reached. All original inline styles restored afterwards |
+| **Lazy-load aware** | Each screen waits for the images in view to finish loading — at least 120 ms, at most 1.5 s — and an image still loading after a full wait isn't waited for again. Page height is re-measured on every screen, so pages that grow as you scroll are followed |
+| **Capture retries** | A refused `captureVisibleTab` call is retried three times with backoff, so one quota hiccup doesn't end the capture |
+| **Memory discipline** | Screens are held as `Blob`s, not base64 strings, during capture — 150 base64 screenshots as JS strings would be hundreds of megabytes. The builder page shows a small preview rather than the full capture, and releases each chunk once it's drawn |
+| **Capture limits** | 150 screens / 120,000 output pixels. On hitting either — or stopping early for any other reason — the PDF's last page names the reason |
 | **No storage impact** | Writes nothing to IndexedDB; uses no permission beyond the ones recording already needs |
 
 
@@ -343,6 +350,9 @@ files/
 │   ├── capture.js          # Turns a stitched capture into a multi-page A4 PDF
 │   └── privacy.html        # Privacy policy page, opened from the popup
 ├── images/                 # Extension icons (16 / 48 / 128 px)
+├── tools/
+│   ├── capture-test-server.js  # Local test pages for "Save current page as PDF"
+│   └── store-assets.html       # Canvas studio for the Chrome Web Store listing images
 ├── dist/                   # Built output (load THIS folder in Chrome)
 ├── manifest.json           # Chrome Extension Manifest V3 config
 ├── webpack.config.js       # Build configuration with code splitting
@@ -351,6 +361,7 @@ files/
 ├── package.json            # Dependencies and build scripts
 ├── PRIVACY_POLICY.md       # Privacy policy (source of truth for src/privacy.html)
 ├── STORE_LISTING.md        # Chrome Web Store listing copy
+├── TODO.md                 # Known open issues, each with its root cause
 └── README.md               # This file
 ```
 
@@ -389,11 +400,26 @@ files/
 - **Fix:** Try it on a normal website. There is no workaround — this is enforced by the browser.
 
 ### The PDF's last page says the capture stopped early
-- The page exceeded 150 screens or 120,000 output pixels. This is almost always an infinite-scroll feed rather than a document.
-- **If you need more:** raise `MAX_CAPTURE_SLICES` / `MAX_TOTAL_PX` in `src/background.js`. Both cost time (600ms per screen) and memory, and produce a longer PDF — the current values are set past the longest real documents.
+The note names the reason:
+
+| Note | Meaning | What to do |
+|---|---|---|
+| *Capture stopped after N screens — this page is longer than Steply can capture in one pass.* | The page passed 150 screens or 120,000 output pixels. Almost always an infinite-scroll feed rather than a document. | Raise `MAX_CAPTURE_SLICES` / `MAX_TOTAL_PX` in `src/background.js` if you really need more. Both cost time and memory; the current values are set past the longest real documents. |
+| *Steply couldn't scroll this page any further, so the capture stops here.* | The page stopped moving before reaching its end — usually a site that takes over scrolling. | Scroll to the part you need and capture from there. |
+| *Chrome stopped allowing screenshots partway down, so the capture stops here.* | Chrome refused screenshots three times in a row, even after waiting. | Try again with other tabs idle. |
+| *Steply couldn't drive this page, so only the visible area was captured.* | The page was open before Steply was installed or reloaded, so it has no content script. | Refresh the page (F5) and capture again. |
+
+### Only the first screen was captured
+- Check the last page's footer first: it says why (see above).
+- If the tab was open before you installed or reloaded Steply, **refresh it (F5)** and try again.
+
+### Some images are blank in the PDF
+- Steply waits up to 1.5 seconds per screen for images to load. An image that takes longer — on a slow connection, or from a slow server — can still come through blank.
+- **Workaround:** scroll slowly to the bottom of the page once before capturing, so everything is already loaded.
+- Images set as CSS backgrounds can't be detected, so they aren't waited for.
 
 ### A nav bar or cookie banner repeats on every page of the PDF
-- Fixed and sticky elements are stripped after the first screen, but a page can pin something in a way that isn't detectable from `getComputedStyle` (for example a JS-repositioned element).
+- Fixed and sticky elements are stripped after the first screen, including ones inside web components. But a page can pin something in a way `getComputedStyle` can't detect (for example a JS-repositioned element), and elements inside *closed* shadow roots are unreachable.
 - **Workaround:** dismiss the banner before capturing.
 
 ### The page looks wrong after a capture
@@ -401,7 +427,7 @@ files/
 - **Fix:** refresh the page. Nothing is persisted, so a reload always returns it to normal.
 
 ### Capture is slow
-- Expected. Chrome rate-limits screen capture to ~2 calls/second, so Steply waits 600ms between screens. A 50-screen page takes ~30 seconds. Lowering the throttle risks `MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota exceeded` errors and torn captures.
+- Expected. Chrome rate-limits screen capture to ~2 calls/second, so Steply waits 600ms between screens, and each screen also waits for its images (at least 120 ms, at most 1.5 s). A 50-screen page takes 35–45 seconds. Lowering the throttle risks `MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota exceeded` errors and torn captures.
 
 ---
 
@@ -415,3 +441,34 @@ files/
 5. Press F5 on your test website
 6. Test your changes
 ```
+
+### Testing "Save current page as PDF"
+
+`tools/capture-test-server.js` serves one page for each way the capture has gone wrong
+before, with the expected result printed at the top of each. It has no dependencies.
+
+```
+node tools/capture-test-server.js
+```
+
+Open `http://localhost:8765/`, capture each page with **Save current page as PDF**, and
+compare the PDF with the expectation on the page:
+
+| Page | Expect |
+|---|---|
+| Lazy images | A green and a blue box in all 6 sections — none blank |
+| Pinned bars in web components | The magenta banner once, the orange bar once |
+| Inner scrolling pane | All 6 sections, and the page visibly scrolls |
+| Page with iframes | All 6 sections; one Steply HUD while recording |
+
+Then try it on a few real sites: a long article, a page with a cookie banner, and a web
+app with a sidebar.
+
+### Releasing
+
+1. Bump `version` in both `manifest.json` and `package.json`. The Chrome Web Store
+   rejects an upload whose version it has already seen.
+2. `npm run build` — production mode, no source maps.
+3. Zip the **contents** of `dist/` (not the folder itself) and upload it in the
+   [Chrome Web Store developer dashboard](https://chrome.google.com/webstore/devconsole).
+4. If the listing changed, paste `STORE_LISTING.md` into the store description.
